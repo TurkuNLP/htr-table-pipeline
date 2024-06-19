@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image visualization tool</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+            cursor: crosshair;
+        }
+        #controls {
+            margin-bottom: 10px;
+        }
+        .imageInfo {
+            margin-bottom: 5px;
+        }
+        #textInfo {
+            margin-top: 10px;
+            position: absolute;
+            background-color: white;
+            border: 1px solid black;
+            padding: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <button id="prevButton">Previous Image</button>
+        <span class="imageInfo" id="imageInfo"></span>
+        <button id="nextButton">Next Image</button>
+        <button id="zoomInButton">Zoom In</button>
+        <button id="zoomOutButton">Zoom Out</button>
+        <input type="text" id="searchInput" placeholder="Search text">
+        <button id="searchButton">Search</button>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div id="textInfo"></div>
+    <script>
+        let currentIndex = 0;
+        let imageList = [];
+        let scaleFactor = 1.0;
+        const scaleStep = 0.1;
+        let jsonData = [];
+
+        fetch('output/file_list.json')
+            .then(response => response.json())
+            .then(data => {
+                imageList = data;
+                loadImageAndCoords(currentIndex);
+            })
+            .catch(error => console.error('Error fetching file list:', error));
+
+        function loadImageAndCoords(index) {
+            if (index < 0 || index >= imageList.length) {
+                return;
+            }
+
+            const { image, json } = imageList[index];
+            const imageElement = new Image();
+            imageElement.src = image;
+            imageElement.onload = function() {
+                const canvas = document.getElementById('canvas');
+                canvas.width = imageElement.width * scaleFactor;
+                canvas.height = imageElement.height * scaleFactor;
+                const ctx = canvas.getContext('2d');
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                ctx.drawImage(imageElement, 0, 0, canvas.width, canvas.height);
+
+                fetch(json)
+                    .then(response => response.json())
+                    .then(data => {
+                        jsonData = data;
+
+                        drawTextRegions(ctx, data);
+
+                        document.getElementById('imageInfo').textContent = `Image: ${image.split('/').pop()}`;
+                    })
+                    .catch(error => console.error('Error fetching JSON:', error));
+            };
+        }
+
+        function drawTextRegions(ctx, data) {
+            ctx.strokeStyle = 'red';
+            ctx.fillStyle = 'blue';
+
+            data.forEach(item => {
+                drawPolygon(ctx, item.coords);
+
+               
+            });
+        }
+
+        function drawPolygon(ctx, coords) {
+            ctx.beginPath();
+            const points = coords.split(' ').map(point => point.split(',').map(Number));
+            ctx.moveTo(points[0][0] * scaleFactor, points[0][1] * scaleFactor);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i][0] * scaleFactor, points[i][1] * scaleFactor);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+        
+       
+
+        const canvas = document.getElementById('canvas');
+        canvas.addEventListener('mousemove', function(event) {
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            let foundHover = false;
+
+            for (let i = 0; i < jsonData.length; i++) {
+                const item = jsonData[i];
+                const points = item.coords.split(' ').map(point => point.split(',').map(Number));
+                const ctx = canvas.getContext('2d');
+
+                ctx.beginPath();
+                ctx.moveTo(points[0][0] * scaleFactor, points[0][1] * scaleFactor);
+                for (let j = 1; j < points.length; j++) {
+                    ctx.lineTo(points[j][0] * scaleFactor, points[j][1] * scaleFactor);
+                }
+                ctx.closePath();
+
+                if (ctx.isPointInPath(x, y)) {
+                    foundHover = true;
+                    showTextInfo(event.clientX, event.clientY, item.text);
+
+                    // Draw the baseline for the hovered text region
+                    drawHoveredBaseline(ctx, item.baseline);
+                    break;
+                }
+            }
+
+            if (!foundHover) {
+                clearTextInfo();
+                hoveredBaseline = null;
+                loadImageAndCoords(currentIndex); // Redraw the image and baselines to clear hovered baseline
+                
+            }
+        });
+
+        function showTextInfo(x, y, text) {
+            const textInfo = document.getElementById('textInfo');
+            textInfo.style.left = `${x + 15}px`;
+            textInfo.style.top = `${y + 15}px`;
+            textInfo.textContent = text;
+            textInfo.style.display = 'block';
+        }
+
+        function clearTextInfo() {
+            const textInfo = document.getElementById('textInfo');
+            textInfo.style.display = 'none';
+        }
+
+        function drawHoveredBaseline(ctx, baseline) {
+            if (baseline) {
+                ctx.strokeStyle = 'blue'; // Different color for hovered baseline
+
+                // Näillä alla olevilla voisi vielä saada visualisoinnin hienommaksi, mutta ratkaisu kesken
+                //loadImageAndCoords(currentIndex);
+                //ctx.clearRect(0, 0, canvas.width, canvas.height); // Tyhjennä canvas
+
+                ctx.beginPath();
+                const points = baseline.split(' ').map(point => point.split(',').map(Number));
+                ctx.moveTo(points[0][0] * scaleFactor, points[0][1] * scaleFactor);
+                ctx.lineTo(points[1][0] * scaleFactor, points[1][1] * scaleFactor);
+                ctx.stroke();
+            }
+        }
+        
+        
+
+
+        document.getElementById('prevButton').addEventListener('click', function() {
+            currentIndex--;
+            if (currentIndex < 0) {
+                currentIndex = imageList.length - 1;
+            }
+            loadImageAndCoords(currentIndex);
+        });
+
+        document.getElementById('nextButton').addEventListener('click', function() {
+            currentIndex++;
+            if (currentIndex >= imageList.length) {
+                currentIndex = 0;
+            }
+            loadImageAndCoords(currentIndex);
+        });
+
+        document.getElementById('zoomInButton').addEventListener('click', function() {
+            scaleFactor += scaleStep;
+            loadImageAndCoords(currentIndex);
+        });
+
+        document.getElementById('zoomOutButton').addEventListener('click', function() {
+            if (scaleFactor > scaleStep) {
+                scaleFactor -= scaleStep;
+                loadImageAndCoords(currentIndex);
+            }
+        });
+
+        document.getElementById('searchButton').addEventListener('click', function() {
+            const searchText = document.getElementById('searchInput').value.toLowerCase();
+            let foundIndex = -1;
+
+            const searchPromises = imageList.map((item, index) => {
+                return fetch(item.json)
+                    .then(response => response.json())
+                    .then(data => {
+                        const found = data.some(entry => entry.text && entry.text.toLowerCase().includes(searchText));
+                        if (found && foundIndex === -1) {
+                            foundIndex = index;
+                        }
+                    });
+            });
+
+            Promise.all(searchPromises).then(() => {
+                if (foundIndex !== -1) {
+                    currentIndex = foundIndex;
+                    loadImageAndCoords(currentIndex);
+                } else {
+                    alert('Text not found in any image.');
+                }
+            }).catch(error => console.error('Error during search:', error));
+        });
+
+        function loadInitialImage() {
+            loadImageAndCoords(currentIndex);
+        }
+        loadInitialImage();
+    </script>
+</body>
+</html>
