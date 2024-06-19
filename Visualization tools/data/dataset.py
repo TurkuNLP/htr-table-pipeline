@@ -122,7 +122,16 @@ class OCRDatasetInstanceSeg(object):
     def __getfullname__(self, idx):
         name = self.imgs[idx]
         return name
+        
+    def __getsize__(self, idx):
+        # load images and masks
+        img_path = self.imgs[idx]
+        xml_path = self.xmls[idx]
 
+        x = xmlPAGE.pageData(xml_path)
+        x.parse()
+        size = x.get_size()[::-1]
+        return img_path, size
     def __getitem__(self, idx):
         # load images and masks
         img_path = self.imgs[idx]
@@ -300,7 +309,6 @@ class OCRDatasetInstanceSeg(object):
             page_el['regiontype'] = "TableRegion"
             page_el['id'] = x.get_id(node)
             coords = x.get_coords(node)
-            print("TableRegion", x.get_id(node))
             page_el['polygon'] = coords
             table_cells = []
             for cell in node.findall("".join(["./", x.base, "TableCell"])):
