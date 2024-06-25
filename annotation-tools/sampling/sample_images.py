@@ -6,11 +6,7 @@ import os
 import shutil
 import zipfile
 
-wb = openpyxl.load_workbook('parish_norm_with_formats.xlsx')
-
 file_dir = "/scratch/project_2005072/moving_records_htr"  # muokkaa tämä
-
-ws = wb.active
 
 def load_images_to_exclude(file_path):
     images_to_exclude = set()
@@ -18,11 +14,15 @@ def load_images_to_exclude(file_path):
         for line in file:
             parts = line.split()
             if parts:  # Check if the line is not empty
-                image_path = parts[0]  # Assuming the file path is the first item on each line
+                image_path = parts[0]  
                 images_to_exclude.add(image_path)
     return images_to_exclude
 
 def yield_images(file_catalogy, layout_to_sample, images_to_exclude):
+    wb = openpyxl.load_workbook(args.file_catalogy)
+
+    ws = wb.active
+
     for row in range(2, ws.max_row + 1): 
         a_value = ws.cell(row=row, column=1).value
         d_value = ws.cell(row=row, column=4).value
@@ -69,6 +69,8 @@ def yield_images(file_catalogy, layout_to_sample, images_to_exclude):
                             yield file_path, note
             else:
                 continue
+    
+
 
 def main(args):
     if args.exclude_file:
@@ -78,6 +80,7 @@ def main(args):
 
     images_to_sample = list(yield_images(args.file_catalogy, args.layout_to_sample, images_to_exclude))
     sampled_images = sample(images_to_sample, args.sample_size)
+
 
     output_dir = os.path.join(file_dir, args.output_dir)
     if not os.path.exists(output_dir):
@@ -91,14 +94,11 @@ def main(args):
 
     with zipfile.ZipFile(args.zip_file, 'r') as zip_ref:
         for file, note in sampled_images:
-            try:
-                source_path = file
-                destination_path = os.path.join(output_dir, os.path.basename(file))
-                with zip_ref.open(source_path) as source, open(destination_path, 'wb') as dest:
-                    shutil.copyfileobj(source, dest)
-            except KeyError:
-                #print(f"File {source_path} not found in the zip archive")
-                continue
+            source_path = file
+            destination_path = os.path.join(output_dir, os.path.basename(file))
+            with zip_ref.open(source_path) as source, open(destination_path, 'wb') as dest:
+                shutil.copyfileobj(source, dest)
+  
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Majority vote')
