@@ -6,7 +6,7 @@ import os
 import shutil
 import zipfile
 
-file_dir = "/scratch/project_2005072/moving_records_htr"  # muokkaa tämä
+file_dir = "/scratch/project_2005072/moving_records_htr"  # muokkaa tämä  "/scratch/project_2005072/moving_records_htr"
 
 def load_images_to_exclude(file_path):
     images_to_exclude = set()
@@ -44,13 +44,14 @@ def yield_images(file_catalogy, layout_to_sample, images_to_exclude):
         notes = [n.strip() for n in notes]
         for note in notes:
             if ":" in note:
-                print_type, pages = note.split(":")
+                print_type, pages = note.split(":")     
             else:
                 print_type = note
                 pages = None
 
             all_printed = print_type.startswith('print')
-            if (args.layout_to_sample == 'all printed' and all_printed) or print_type == args.layout_to_sample:
+            all_handdrawn = print_type.startswith(('handrawn', 'halfbook', 'free text'))  
+            if (args.layout_to_sample == 'all printed' and all_printed) or print_type == args.layout_to_sample or (args.layout_to_sample == 'all handdrawn' and all_handdrawn):
                 if pages:
                     page_ranges = pages.split(',')
                     for page_range in page_ranges:
@@ -90,7 +91,8 @@ def main(args):
     readme_path = os.path.join(output_dir, 'README.txt')
     with open(readme_path, 'w') as f:
         for file, note in sampled_images:
-            f.write(f'{file}  {note}\n')
+            print_type = note.split(':')[0].strip() 
+            f.write(f'{file}  {print_type}\n')
 
     with zipfile.ZipFile(args.zip_file, 'r') as zip_ref:
         for file, note in sampled_images:
