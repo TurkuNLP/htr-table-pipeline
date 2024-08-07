@@ -50,7 +50,7 @@ def yield_images(file_catalogy, layout_to_sample, images_to_exclude):
                 pages = None
 
             all_printed = print_type.startswith('print')
-            all_handdrawn = print_type.startswith(('handrawn', 'halfbook', 'free text'))  
+            all_handdrawn = print_type.startswith('handrawn')  
             if (args.layout_to_sample == 'all printed' and all_printed) or print_type == args.layout_to_sample or (args.layout_to_sample == 'all handdrawn' and all_handdrawn):
                 if pages:
                     page_ranges = pages.split(',')
