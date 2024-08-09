@@ -28,10 +28,10 @@ def main(args):
     with open(os.path.join(args.data_dir, "data.json"), "rt", encoding="utf-8") as f:
         data = json.load(f)
 
-    device = torch.device("cuda:0" if torch.cuda.is_available else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("device:", device)
-
-    processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+    
+    processor = TrOCRProcessor.from_pretrained(args.processor)
     model = VisionEncoderDecoderModel.from_pretrained(args.model).to(device)
     
     correct = 0
@@ -57,8 +57,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, help="")
-    parser.add_argument("--model", type=str, help="")
+    parser.add_argument("--data_dir", type=str, required=True, help="Data directory")
+    parser.add_argument("--model", type=str, required=True, help="Name or path of the model")
+    parser.add_argument("--processor", type=str, default="microsoft/trocr-base-handwritten", help="Name or path of the processor (tokenizer)")
     args = parser.parse_args()
 
     main(args)
+
+# Usage: python predict.py --data_dir data --model supermalli_v1/checkpoint
