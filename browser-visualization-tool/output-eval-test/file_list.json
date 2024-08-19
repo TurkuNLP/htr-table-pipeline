@@ -1,0 +1,26 @@
+[
+    {
+        "image": "eval-test-img/angelniemi_muuttaneet_1891-1908_mko136-137_15.jpg",
+        "json": "output-eval-test/angelniemi_muuttaneet_1891-1908_mko136-137_15_coords.json"
+    },
+    {
+        "image": "eval-test-img/0001_angelniemi_muuttaneet_1891-1908_mko136-137_15.jpg",
+        "json": "output-eval-test/0001_angelniemi_muuttaneet_1891-1908_mko136-137_15_coords.json"
+    },
+    {
+        "image": "eval-test-img/alavieska_muuttaneet_1891-1899_mko8_9-tbl-groundt.jpg",
+        "json": "output-eval-test/alavieska_muuttaneet_1891-1899_mko8_9-tbl-groundt_coords.json"
+    },
+    {
+        "image": "eval-test-img/alavieska_muuttaneet_1891-1899_mko8_9-cell-test.jpg",
+        "json": "output-eval-test/alavieska_muuttaneet_1891-1899_mko8_9-cell-test_coords.json"
+    },
+    {
+        "image": "eval-test-img/alavieska_muuttaneet_1891-1899_mko8_9-tbl-prediction.jpg",
+        "json": "output-eval-test/alavieska_muuttaneet_1891-1899_mko8_9-tbl-prediction_coords.json"
+    },
+    {
+        "image": "eval-test-img/alavieska_muuttaneet_1891-1899_mko8_9.jpg",
+        "json": "output-eval-test/alavieska_muuttaneet_1891-1899_mko8_9_coords.json"
+    }
+]

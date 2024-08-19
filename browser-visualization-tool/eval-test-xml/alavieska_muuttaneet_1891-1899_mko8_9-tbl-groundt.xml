@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15 http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15/pagecontent.xsd">
+    <Metadata>
+        <Creator>Transkribus</Creator>
+        <Created>2024-08-06T11:32:22.674+02:00</Created>
+        <LastChange>2024-08-06T11:34:59.460+02:00</LastChange>
+        <TranskribusMetadata docId="3583435" pageId="76188502" pageNr="1" tsid="181517855" status="IN_PROGRESS" userId="244187" imgUrl="https://files.transkribus.eu/Get?id=UMCEEEAIGYTPFHNZLLECKEFL&amp;fileType=view" xmlUrl="https://files.transkribus.eu/Get?id=MXNCPITNSLAILGOJEOSAWKHN" imageId="61893119"/>
+    </Metadata>
+    <Page imageFilename="alavieska_muuttaneet_1891-1899_mko8_9-tbl-prediction.jpg" imageWidth="2200" imageHeight="1723">
+        <TableRegion id="t" custom="readingOrder {index:0;}">
+            <Coords points="40,70 40,215 2103,215 2103,70"/>
+            <TableCell row="0" col="0" rowSpan="1" colSpan="1" id="c">
+                <Coords points="39,66 40,215 2103,215 2102,66"/>
+                <CornerPts>0 1 2 3</CornerPts>
+            </TableCell>
+        </TableRegion>
+        <TableRegion id="t_21" custom="readingOrder {index:1;}">
+            <Coords points="34,224 34,397 2110,397 2110,224"/>
+            <TableCell row="0" col="0" rowSpan="1" colSpan="1" id="c_22">
+                <Coords points="36,221 36,395 2108,397 2111,223"/>
+                <CornerPts>0 1 2 3</CornerPts>
+            </TableCell>
+        </TableRegion>
+        <TableRegion id="t_97" custom="readingOrder {index:2;}">
+            <Coords points="39,401 39,1686 2086,1686 2086,401"/>
+            <TableCell row="0" col="0" rowSpan="1" colSpan="1" id="c_98">
+                <Coords points="36,397 45,1684 2084,1686 2108,395"/>
+                <CornerPts>0 1 2 3</CornerPts>
+            </TableCell>
+        </TableRegion>
+    </Page>
+</PcGts>
