@@ -5,7 +5,7 @@ import argparse
 def train(args):
     model = YOLO('yolov8n-cls.pt') # load a pretrained model (recommended for training)
     # Train the model
-    model.train(data=args.data, epochs=1)
+    model.train(data=args.data, epochs=5)
     metrics = model.val()
     print(metrics)
     print(metrics.top1)

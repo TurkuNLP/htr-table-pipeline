@@ -38,7 +38,6 @@ def predict(args):
         label = r.names[max_index]
         score = r.probs.data[max_index].item()
         pred_labels.append((label, score))
-        gc.collect()
     
 
     # compare
@@ -52,7 +51,9 @@ def predict(args):
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=all_labels)
 
     disp.plot()
-    plt.show()
+    #plt.show()
+    # save the plot as png
+    plt.savefig("confusion_matrix.png")
     
 
 
@@ -68,4 +69,4 @@ if __name__ == "__main__":
 
     predict(args)
     
-    # Usage: python train.py --data yolo-data
+    # Usage: python predict.py --data-dir yolo-data --model trained-yolo-model.pt

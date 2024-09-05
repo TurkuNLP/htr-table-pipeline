@@ -156,11 +156,14 @@ def process_dataset(input_dir, output_dir, context_type):
     cell_idx = 0
     #data_json = {}
     for fname in annotated_files:
-        for image_name,  coord_points, label in yield_annotated_cells(fname):
-            # load image
-            img = cv2.imread(os.path.join(input_dir, "images", image_name)) ## TODO: DO NOT read image for each cell !!!!
-            # mark cell
-            # coord_points = [(89,88), (89,247), (1083,247), (1083,88)]
+        print(fname)
+        # load image here once, then just make copy of it
+        image_name = os.path.basename(fname).replace(".xml", ".jpg")
+        orig_img = cv2.imread(os.path.join(input_dir, "images", image_name)) ## TODO: DO NOT read image for each cell !!!!
+
+        for image_name_,  coord_points, label in yield_annotated_cells(fname):        
+            
+            img = orig_img.copy() #  copy to prevent destroying the original image when processing one cell
             
             # context
             img = process_image(img, context_type, coord_points)
@@ -172,7 +175,10 @@ def process_dataset(input_dir, output_dir, context_type):
 
             # save cropped image
             cell_image_name = image_name.rsplit(".", 1)[0] + f"_{cell_idx}.jpg"
-            cv2.imwrite(os.path.join(output_dir, label, cell_image_name), img)
+            try:
+                cv2.imwrite(os.path.join(output_dir, label, cell_image_name), img)
+            except:
+                print("Saving failed for", os.path.join(output_dir, label, cell_image_name))
             cell_idx += 1
 
             # save data to json
