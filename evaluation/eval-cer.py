@@ -106,3 +106,4 @@ if __name__ == '__main__':
 
     main(args)
 
+# run: python eval-cer.py --prediction-json (json-file with annotated and predicted text)
