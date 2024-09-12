@@ -80,6 +80,15 @@ def yield_annotated_cells(fname):
                         coord_points = process_xml_coordinates(coords_elem.attrib.get("points"))
                         yield image_name, coord_points, text
 
+def count_files(args):
+    total_annotated_cells = 0
+    annotated_files = glob.glob(os.path.join(args.xml_directory, "*", "*.xml"))
+    print("Annotated files:", len(annotated_files))
+    for fname in annotated_files:
+        for image_name,  coord_points, annotated_text in yield_annotated_cells(fname):
+            total_annotated_cells += 1
+            print(annotated_text)
+    print("Total number of annotated cells:", total_annotated_cells)
 
 def main(args):
     annotated_files = glob.glob(os.path.join(args.xml_directory, "*.xml"))
@@ -119,10 +128,15 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--xml_directory", type=str, default="Annotated xml files")
-    parser.add_argument("--image_directory", type=str, default="Path to images")
-    parser.add_argument("--output_dir", type=str, default="Output directory with cropped images and the json file")
+    parser.add_argument("--xml_directory", type=str, required=True, help="Annotated xml files")
+    parser.add_argument("--image_directory", type=str, required=True, help="Path to images")
+    parser.add_argument("--output_dir", type=str, required=True, help="Output directory with cropped images and the json file")
+    parser.add_argument("--only-count", action="store_true", default=False, help="Only count the number of cells with text annotation, do nothing else.")
     args = parser.parse_args()
+
+    if args.only_count == True:
+        count_files(args)
+        exit(0)
 
     if not os.path.isdir(args.output_dir):
         print("Output directory does not exist. Please create it first.")
