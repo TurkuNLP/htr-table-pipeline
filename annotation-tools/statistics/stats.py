@@ -6,6 +6,7 @@ import os
 import shutil
 import zipfile
 from collections import Counter
+import xml.etree.ElementTree as ET
 
 
 def yield_images(file_catalogy):
@@ -41,7 +42,7 @@ def yield_images(file_catalogy):
                         annotated_types[i] = print_type
                 else:  # all pages follow thid print type
                     for page_number in range(1, images+1):
-                        annotated_types[page_number] = print_type
+                        annotated_types[page_number] = print_type   
         
         # all notes processed, yield pages with layout type
         #print(annotated_types)
@@ -55,12 +56,23 @@ def yield_images(file_catalogy):
 # Function, that reads local files that have been cloned from htr-annotations GitHub repository.
 def read_local_files(directory):
     local_files = []
+    cell_annotated_local_files = []
     for root, dirs, files in os.walk(directory):
         for file in files:
             if file.lower().endswith(".xml"):  
-                local_files.append(os.path.basename(file))  
+                local_files.append(os.path.basename(file))
+                file_path = os.path.join(root, file)
+                tree = ET.parse(file_path)
+                root_element = tree.getroot()
+                for element in root_element.iter():
+                    custom_attrib = element.attrib.get('custom', '')
+                    # Tarkistetaan sisältääkö 'custom' merkkijonon 'structure'
+                    if "structure" in custom_attrib:
+                        cell_annotated_local_files.append(os.path.basename(file))  # Append files with custom="structure"
+                        break  
+                #file_path = os.path.join(root, file)
     #print(local_files)
-    return local_files
+    return local_files, cell_annotated_local_files
     
 
 def main(args):
@@ -82,17 +94,26 @@ def main(args):
     print(f"Total free text in Excel: {total_free_text_in_excel} ({round((total_free_text_in_excel / total_images_in_excel) * 100, 2)}%)")
     print(f"Total other layout in Excel: {total_other_layout_in_excel} ({round((total_other_layout_in_excel / total_images_in_excel) * 100, 2)}%)")
 
-    local_files = read_local_files(args.local_directory)
+    local_files, cell_annotated_local_files = read_local_files(args.local_directory)
     annotated_local_files = [file_path for file_path, layout in images if file_path in local_files]
+    cell_annotated_local_files = [file_path for file_path, layout in images if file_path in cell_annotated_local_files]
     total_annotated_files = len(annotated_local_files)
+    total_cell_annotated_files = len(cell_annotated_local_files)
 
     local_layout_counter = Counter([layout for file_path, layout in images if file_path in local_files])
+    cell_annotated_local_file_counter = Counter([layout for file_path, layout in images if file_path in cell_annotated_local_files])
 
     total_annotated_printed = sum(count for layout, count in local_layout_counter.items() if layout.startswith("print"))
     total_annotated_handdrawn = sum(count for layout, count in local_layout_counter.items() if layout.startswith("handrawn"))
     total_annotated_halfbook = sum(count for layout, count in local_layout_counter.items() if layout.startswith("halfbook"))
     total_annotated_free_text = sum(count for layout, count in local_layout_counter.items() if layout.startswith("free text"))
     total_annotated_other = total_annotated_files - (total_annotated_printed + total_annotated_handdrawn + total_annotated_halfbook + total_annotated_free_text)
+    total_cell_annotated_files = sum(count for layout, count in cell_annotated_local_file_counter.items())
+    total_cell_annotated_printed = sum(count for layout, count in cell_annotated_local_file_counter.items() if layout.startswith("print"))
+    total_cell_annotated_handdrawn = sum(count for layout, count in cell_annotated_local_file_counter.items() if layout.startswith("handrawn"))
+    total_cell_annotated_halfbook = sum(count for layout, count in cell_annotated_local_file_counter.items() if layout.startswith("halfbook"))
+    total_cell_annotated_free_text = sum(count for layout, count in cell_annotated_local_file_counter.items() if layout.startswith("free text"))
+    total_cell_annotated_other = total_cell_annotated_files - (total_cell_annotated_printed + total_cell_annotated_handdrawn + total_cell_annotated_halfbook + total_cell_annotated_free_text)
 
     print(f"Total annotated files: {total_annotated_files} ({round((total_annotated_files / total_images_in_excel) * 100, 2)}%)")
     print(f"Total annotated printed: {total_annotated_printed} ({round((total_annotated_printed / total_annotated_files) * 100, 2)}%)")
@@ -100,6 +121,12 @@ def main(args):
     print(f"Total annotated halfbook: {total_annotated_halfbook} ({round((total_annotated_halfbook / total_annotated_files) * 100, 2)}%)")
     print(f"Total annotated free text: {total_annotated_free_text} ({round((total_annotated_free_text / total_annotated_files) * 100, 2)}%)")
     print(f"Total annotated other: {total_annotated_other} ({round((total_annotated_other / total_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated: {total_cell_annotated_files}({round((total_cell_annotated_files / total_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated printed: {total_cell_annotated_printed} ({round((total_cell_annotated_printed / total_cell_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated handdrawn: {total_cell_annotated_handdrawn} ({round((total_cell_annotated_handdrawn / total_cell_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated halfbook: {total_cell_annotated_halfbook} ({round((total_cell_annotated_halfbook / total_cell_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated free text: {total_cell_annotated_free_text} ({round((total_cell_annotated_free_text / total_cell_annotated_files) * 100, 2)}%)")
+    print(f"Total cell annotated other: {total_cell_annotated_other} ({round((total_cell_annotated_other / total_cell_annotated_files) * 100, 2)}%)")
 
     if args.verbose:  
         print("\n### Layout Statistics for Entire Excel ###")
@@ -110,6 +137,10 @@ def main(args):
         print("\n### Layout Statistics for Annotated Files ###")
         for layout, count in local_layout_counter.most_common(100):
             print(f"LAYOUT: {layout}, PAGE COUNT: {count} ({round((count/len(annotated_local_files))*100, 2)}%)")
+
+        print("\n### Layout Statistics for Cell Annotated Files ###")
+        for layout, count in cell_annotated_local_file_counter.most_common(100):
+            print(f"LAYOUT: {layout}, PAGE COUNT: {count} ({round((count/len(cell_annotated_local_files))*100, 2)}%)")    
 
 
 if __name__ == '__main__':
