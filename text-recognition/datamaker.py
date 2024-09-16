@@ -4,6 +4,8 @@ import cv2
 import argparse
 import os
 import json
+import zipfile
+import numpy as np
 
 
 ### For model finetuning, we need to make a pytorch dataset, where we have the filename of the cropped image,
@@ -52,6 +54,18 @@ def process_xml_coordinates(coords):
     coord_points = [tuple(map(int, point.split(","))) for point in coord_points]
     return coord_points
 
+
+def read_zip(zip_fname):
+    # read zip file and extract all image names and their path
+    # create a dictionary where key is basename, and value is full name with path so that we can get the correct image easily using its basename
+    d = {}
+    with zipfile.ZipFile(zip_fname, 'r') as zip_file:
+        for fname in zip_file.namelist():
+            basename = os.path.basename(fname)
+            d[basename] = fname
+    print(f"{len(d)} images read from the zip file.")
+    return d
+
 namespace = {'ns': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
 
 def yield_annotated_cells(fname):
@@ -82,25 +96,28 @@ def yield_annotated_cells(fname):
 
 def count_files(args):
     total_annotated_cells = 0
-    annotated_files = glob.glob(os.path.join(args.xml_directory, "*", "*.xml"))
+    annotated_files = glob.glob(os.path.join(args.xml_directory, "**/*.xml"), recursive=True)
     print("Annotated files:", len(annotated_files))
     for fname in annotated_files:
         for image_name,  coord_points, annotated_text in yield_annotated_cells(fname):
             total_annotated_cells += 1
-            print(annotated_text)
     print("Total number of annotated cells:", total_annotated_cells)
 
 def main(args):
-    annotated_files = glob.glob(os.path.join(args.xml_directory, "*.xml"))
+    annotated_files = glob.glob(os.path.join(args.xml_directory, "**/*.xml"), recursive=True)
     annotated_files.sort()
     #annotated_files = annotated_files[:10]
+    zip_dict = read_zip(args.image_zip)
+    zip_file = zipfile.ZipFile(args.image_zip, 'r')
 
     crop_idx = 0
     data_json = {}
     for fname in annotated_files:
+        image_name = zip_dict[os.path.basename(fname).replace(".xml", ".jpg")]
+        image_data = zip_file.read(image_name)
+        orig_img = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)    
         for image_name,  coord_points, annotated_text in yield_annotated_cells(fname):
-            # load image
-            img = cv2.imread(os.path.join(args.image_directory, image_name))
+            img = orig_img.copy() #  copy to prevent destroying the original image when processing one cell
             # crop image
             # coord_points = [(89,88), (89,247), (1083,247), (1083,88)]
             min_y, max_y = min([point[0] for point in coord_points]), max([point[0] for point in coord_points])
@@ -113,6 +130,7 @@ def main(args):
             # save data to json
             data_json[crop_idx] = {"file_name": crop_image_name, "text": annotated_text.strip()}
             crop_idx += 1
+
 
     with open(os.path.join(args.output_dir, "data.json"), "w") as f:
         json.dump(data_json, f)
@@ -128,8 +146,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--xml_directory", type=str, required=True, help="Annotated xml files")
-    parser.add_argument("--image_directory", type=str, required=True, help="Path to images")
+    parser.add_argument("--xml_directory", type=str, required=True, help="Annotated xml files (root directory which can include any number of subdirectories), will read each .xml file from the directory and its subdirectories.")
+    parser.add_argument("--image_zip", type=str, required=True, help="Zip file with all downloaded images.")
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory with cropped images and the json file")
     parser.add_argument("--only-count", action="store_true", default=False, help="Only count the number of cells with text annotation, do nothing else.")
     args = parser.parse_args()
@@ -144,4 +162,4 @@ if __name__ == "__main__":
 
     main(args)
 
-    # Usage: python datamaker.py --xml_directory htr-annotations/sample9-all-printed-xml/ --image_directory htr-images/sample9-all-printed/ --output_dir cropped-training-images
+    # Usage: python datamaker.py --xml_directory htr-annotations/ --image_zip moving_records_htr/images.zip --output_dir cropped-training-images

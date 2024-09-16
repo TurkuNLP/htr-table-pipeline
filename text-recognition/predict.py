@@ -54,12 +54,18 @@ def main(args):
     print(f"Exact match accuracy:", sum([1 if norm(annotations[i]) == norm(predictions[i]) else 0 for i in range(len(annotations))])/len(annotations)*100)
     cer_metric = load_metric("cer")
     print("CER:", cer_metric.compute(predictions=[norm(p) for p in predictions], references=[norm(a) for a in annotations]))
+    with open(args.output_json, "wt", encoding="utf-8") as f:
+        l = []
+        for a, p in zip(annotations, predictions):
+            l.append({"annotation": a, "prediction": p})
+        json.dump(l, f, ensure_ascii=False, indent=4)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, required=True, help="Data directory")
     parser.add_argument("--model", type=str, required=True, help="Name or path of the model")
     parser.add_argument("--processor", type=str, default="microsoft/trocr-base-handwritten", help="Name or path of the processor (tokenizer)")
+    parser.add_argument("--output-json", type=str, default="predictions.json", help="Output JSON file")
     args = parser.parse_args()
 
     main(args)

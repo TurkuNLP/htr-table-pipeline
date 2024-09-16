@@ -3,65 +3,70 @@ import json
 import evaluate  
 import re
 
+
+# global metrics
+cer_metric = evaluate.load("cer")
+em_metric = evaluate.load("exact_match")
+
 def parse_json(json_file):
     with open(json_file, 'r', encoding='utf-8') as file:
         data = json.load(file)
     
-    annotations = []
-    predictions = []
+    examples = []
 
     for entry in data:
-        anno = entry.get('annotation', '').strip()
-        pred = entry.get('prediction', '').strip()
+        anno = entry.get('annotation').strip() # This fails if annotation/prediction is None, that's intended
+        pred = entry.get('prediction').strip()
 
-        annotations.append(anno)
-        predictions.append(pred)
+        if "?" in anno: # refers to unsure annotations
+            continue
 
-    if len(predictions) != len(annotations):
-        raise ValueError("The number of predictions and annotations must match.")
+        examples.append((pred, anno))
 
-    return annotations, predictions
+    return examples
 
-def is_numeric(anno_pred_pairs):
+########################
+### FILTER FUNCTIONS ###
+
+def is_empty(example):
+    prediction, annotation = example
+    if annotation == '':
+        return True
+    return False
+
+def is_numeric(example):
     # recognises strings with spaces and numbers as a number string
-    cleaned_annotation = re.sub(r'\s+', '', anno_pred_pairs[0])
-    #print(cleaned_annotation)
-    num_pre = re.match(r'^\d+$', cleaned_annotation)    # bool(re.match(r'^\d+$', cleaned_annotation))
-    numeric = bool(num_pre)
-    #print(num_pre)
-    return numeric
+    # can also contain number-like or date-like special characters (.,-/) but cannot be consisted of only these
+    prediction, annotation = example
+    cleaned_annotation = re.sub(r'\s+', '', annotation)
+    if re.match(r'^[\d\.,\/-]+$', cleaned_annotation) and re.match(r'\d+', cleaned_annotation):
+        return True
+    return False
 
-def is_special_character_only(anno_pred_pairs):
-    # looks for special charecters with the exception of leaving out (")
-    #print(anno_pred_pairs)
-    special_pre = re.fullmatch(r'[^\w\s"]', anno_pred_pairs[0])     # bool(re.search(r'[^\w\s]', anno_pred_pairs[0]))
-    special = bool(special_pre)
-    #print(special_pre)
-    return special
+def is_special_character_only(example):
+    # looks for special charecters (non-letters, non-numbers) with the exception of leaving out (")
+    # Note: underscore (_) is not considered a special charecter!
+    prediction, annotation = example
+    cleaned_annotation = re.sub(r'\s+', '', annotation)
+    if re.fullmatch(r'[^\w"]', cleaned_annotation):
+        return True
+    return False
 
-def is_numeric_and_special_charecter(anno_pred_pairs):
-    # looks for numbers and special charecters in the same cell e.g. dates
-    annotation = anno_pred_pairs[0]
-    # print(annotation)
-    has_number = re.search(r'\d', annotation) is not None
-    has_special = re.search(r'[^\w\s]', annotation) is not None
-    no_letters = re.search(r'[a-zA-Z]', annotation) is None
-    all_pre = has_number and has_special and no_letters
-    all = bool(all_pre)
-    # print(all_pre)
-    return all
 
-def is_same_as(anno_pred_pairs):
+def is_same_as(example):
     # Same as charecters(", D, Do)
-    same_as_patterns = [r'^"$', r'^\bD\b$', r'^\bDo\b$']
-    annotation = anno_pred_pairs[0]
+    same_as_patterns = [r'^"$', r'^D\.?$', r'^Do\.?$', r'^d\.?$', r'^do\.?$']
+    prediction, annotation = example
+    cleaned_annotation = re.sub(r'\s+', '', annotation)
     #print(anno_pred_pairs)
-    same_as = any(re.match(pattern, annotation) for pattern in same_as_patterns)
-    #print(same_as)
+    same_as = any(re.match(pattern, cleaned_annotation) for pattern in same_as_patterns)
     return same_as
 
+############################################
+
+
 def calculate_cer(predictions, annotations):
-    cer_metric = evaluate.load("cer")
+    global cer_metric
     
     if all(len(anno) == 0 for anno in annotations):
         raise ValueError("Annotations cannot be empty strings.")
@@ -69,35 +74,63 @@ def calculate_cer(predictions, annotations):
     cer_result = cer_metric.compute(predictions=predictions, references=annotations)
     return {'cer': cer_result}
 
+def calculate_em(predictions, annotations):
+    global em_metric
+    em_result = em_metric.compute(predictions=predictions, references=annotations)
+    return em_result
+
+
+def run_eval(examples):
+    print(f"{len(examples)} entries found.")
+    pred, ann = zip(*examples) if examples else ([], [])
+    em = calculate_em(pred, ann) if examples else {'exact_match': 0.0}
+    print(f'Exact match: {em["exact_match"]:.4f}')
+    cer = calculate_cer(pred, ann) if examples else {'cer': 0.0}
+    print(f'CER: {cer["cer"]:.4f}\n')
+
+
 def main(args):
-    annotations, predictions = parse_json(args.prediction_json)
-    anno_pred_pairs = list(zip(annotations, predictions))
+    anno_pred_pairs = parse_json(args.prediction_json)
+    examples = parse_json(args.prediction_json) # list of (predistion, annotation) -pairs
 
-    numeric_examples = list(filter(is_numeric, anno_pred_pairs))
-    text_examples = list(filter(lambda x: not is_numeric(x), anno_pred_pairs))
-    special_char_only_examples = list(filter(is_special_character_only, anno_pred_pairs))
-    numeric_and_special_charecter_examples = list(filter(is_numeric_and_special_charecter, anno_pred_pairs))
-    same_as_examples = list(filter(is_same_as, anno_pred_pairs))
+    ## All
+    print("All examples:")
+    run_eval(examples)
 
-    numeric_annotations, numeric_predictions = zip(*numeric_examples) if numeric_examples else ([], [])
-    text_annotations, text_predictions = zip(*text_examples) if text_examples else ([], [])
-    special_char_only_annotations, special_char_only_predictions = zip(*special_char_only_examples) if special_char_only_examples else ([], [])
-    numeric_and_special_charecter_annotations, numeric_and_special_charecter_predictions = zip(*numeric_and_special_charecter_examples) if numeric_and_special_charecter_examples else ([], [])
-    same_as_annotations, same_as_predictions = zip(*same_as_examples) if same_as_examples else ([], [])
+    ## empty annotations
+    print("Empty entries:")
+    empty_examples = list(filter(is_empty, examples))
+    run_eval(empty_examples)
 
-    cer_numeric = calculate_cer(numeric_predictions, numeric_annotations) if numeric_predictions else {'cer': 0.0}
-    cer_text = calculate_cer(text_predictions, text_annotations) if text_predictions else {'cer': 0.0}
-    cer_special_chars = calculate_cer(special_char_only_predictions, special_char_only_annotations) if special_char_only_predictions else {'cer': 0.0}
-    cer_numeric_and_special = calculate_cer(numeric_and_special_charecter_predictions, numeric_and_special_charecter_annotations) if numeric_and_special_charecter_predictions else {'cer': 0.0}
-    cer_same_as = calculate_cer(same_as_predictions, same_as_annotations) if same_as_predictions else {'cer': 0.0}
-    cer_all = calculate_cer(predictions, annotations)
+    if len(empty_examples) != 0: # keep only non-empty entries
+        examples = list(filter(lambda x: not is_empty(x), examples))
 
-    print(f"Average CER for numeric ONLY entries: {cer_numeric['cer']:.4f}")
-    print(f"Average CER for text ONLY entries: {cer_text['cer']:.4f}")
-    print(f"Average CER for special character ONLY entries: {cer_special_chars['cer']:.4f}")
-    print(f"Average CER for numeric and special character ONLY entries: {cer_numeric_and_special['cer']:.4f}")
-    print(f"Average CER for same-as character ONLY entries: {cer_same_as['cer']:.4f}")
-    print(f"Average CER for all entries: {cer_all['cer']:.4f}")
+    ## numeric and date like entries
+    print("Numeric entries (numbers + [.,-/]):")
+    numeric_examples = list(filter(is_numeric, examples))
+    #print(numeric_examples)
+    run_eval(numeric_examples)
+
+    ## special character only entries
+    print("Entries which include only special characters (non-letters, non-numbers):")
+    special_char_examples = list(filter(is_special_character_only, examples))
+    print("Found entries:", set(a for p, a in special_char_examples))
+    #print(special_char_examples)
+    run_eval(special_char_examples)
+
+    ## same as entries
+    print("Entries which are same as above markings (\", D, Do):")
+    same_as_examples = list(filter(is_same_as, examples))
+    print("Found entries:", set(a for p,a in same_as_examples))
+    #print(same_as_examples)
+    run_eval(same_as_examples)
+
+    ## the rest are normal textual entries
+    print("Textual entries:")
+    text_examples = list(filter(lambda x: not is_numeric(x) and not is_special_character_only(x) and not is_same_as(x), examples))
+    #print(text_examples)
+    run_eval(text_examples)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Compare predictions and annotations with CER')
