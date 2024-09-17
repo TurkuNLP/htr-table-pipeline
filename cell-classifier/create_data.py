@@ -4,6 +4,8 @@ import cv2
 import argparse
 import os
 import json
+import zipfile
+import numpy as np
 
 ## LABEL METADATA
 cell_labels = {"structure {type:line;}": "line", "structure {type:multi-line;}": "multi-line", "structure {type:same-as;}": "same-as", "structure {type:empty;}": "empty", "structure {type:misc;}": "misc"}
@@ -54,6 +56,18 @@ Example XML file:
 
 """
 
+def read_zip(zip_fname):
+    # read zip file and extract all image names and their path
+    # create a dictionary where key is basename, and value is full name with path so that we can get the correct image easily using its basename
+    d = {}
+    with zipfile.ZipFile(zip_fname, 'r') as zip_file:
+        for fname in zip_file.namelist():
+            basename = os.path.basename(fname)
+            d[basename] = fname
+    print(f"{len(d)} images read from the zip file.")
+    return d
+
+
 def process_xml_coordinates(coords):
     """
     :param coords: string of coordinates in the format "x1,y1 x2,y2 x3,y3 ..."
@@ -65,6 +79,20 @@ def process_xml_coordinates(coords):
     return coord_points
 
 namespace = {'ns': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
+
+
+def includes_cell_annotations(fname):
+    # check whether the xml file includes cell annotations or not
+    global cell_labels
+    with open(fname, 'rt', encoding="utf-8") as f:
+        tree = ET.parse(f)
+        root = tree.getroot()
+        for table in root.findall('.//ns:TableRegion', namespace):
+            for cell in table.findall('.//ns:TableCell', namespace):
+                cell_annotation = cell.attrib.get("custom", None)
+                if cell_annotation is not None and cell_annotation in cell_labels:
+                    return True
+    return False
 
 def yield_annotated_cells(fname):
     """ Takes xml file name and yields one annotated cell at a time.
@@ -142,11 +170,16 @@ def process_image(img, context_type, cell_coord_points):
     else:
         raise NotImplementedError(f"Context type {context_type} not implemented.")
 
-def process_dataset(input_dir, output_dir, context_type):
+def process_dataset(input_xml, image_zip_fname, ds_image_zip_fname, output_dir, context_type):
     global cell_labels
 
-    annotated_files = glob.glob(os.path.join(input_dir, "xml", "*.xml"))
+    annotated_files = glob.glob(os.path.join(input_xml, "**/*.xml"), recursive=True)
     annotated_files.sort()
+
+    zip_dict = read_zip(image_zip_fname)
+    ds_zip_dict = read_zip(ds_image_zip_fname)
+    zip_file = zipfile.ZipFile(image_zip_fname, 'r')
+    ds_zip_file = zipfile.ZipFile(ds_image_zip_fname, 'r')
 
     # intialize directories
     for label in cell_labels.values():
@@ -154,12 +187,29 @@ def process_dataset(input_dir, output_dir, context_type):
             os.makedirs(os.path.join(output_dir, label))
 
     cell_idx = 0
-    #data_json = {}
+    total_files = 0
     for fname in annotated_files:
-        print(fname)
+
+        # Ckeck if this file include cell annotations, if not, skip
+        if includes_cell_annotations(fname) == False:
+            continue
+        #print(fname)
+        total_files += 1
+
         # load image here once, then just make copy of it
-        image_name = os.path.basename(fname).replace(".xml", ".jpg")
-        orig_img = cv2.imread(os.path.join(input_dir, "images", image_name)) ## TODO: DO NOT read image for each cell !!!!
+        image_basename = os.path.basename(fname).replace(".xml", ".jpg")
+        image_basename = image_basename.replace(".jpg.jpg", ".jpg") # fix error in the data
+        if image_basename in ds_zip_dict:
+            image_name = ds_zip_dict[image_basename]
+            image_data = ds_zip_file.read(image_name)
+            print(f"Found {fname} from deskewed images.")
+        else:
+            image_name = zip_dict[image_basename]
+            image_data = zip_file.read(image_name)
+            print(f"Found {fname} from original images.")
+
+        orig_img = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)    
+
 
         for image_name_,  coord_points, label in yield_annotated_cells(fname):        
             
@@ -174,7 +224,7 @@ def process_dataset(input_dir, output_dir, context_type):
             #cv2.waitKey(0)
 
             # save cropped image
-            cell_image_name = image_name.rsplit(".", 1)[0] + f"_{cell_idx}.jpg"
+            cell_image_name = image_name_.rsplit(".", 1)[0] + f"_{cell_idx}.jpg"
             try:
                 cv2.imwrite(os.path.join(output_dir, label, cell_image_name), img)
             except:
@@ -184,14 +234,15 @@ def process_dataset(input_dir, output_dir, context_type):
             # save data to json
             #data_json[cell_idx] = {"file_name": cell_image_name, "label": label}
             cell_idx += 1
+    print(f"{total_files} files with cell annotation processed.")
 
 def main(args):
 
     # create training data
-    process_dataset(args.train_data, os.path.join(args.output_dir, "train"), context_type=args.context_type)
+    process_dataset(args.train_xml, args.image_zip, args.ds_image_zip, os.path.join(args.output_dir, "train"), context_type=args.context_type)
 
     # create validation data
-    process_dataset(args.dev_data, os.path.join(args.output_dir, "val"), context_type=args.context_type)
+    process_dataset(args.dev_xml, args.image_zip, args.ds_image_zip, os.path.join(args.output_dir, "val"), context_type=args.context_type)
 
     # print summary
     print("Train data summary:")
@@ -208,10 +259,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train-data", type=str, help="Path to training data, should have subdirectories xml and images.")
-    parser.add_argument("--dev-data", type=str, help="Path to training data, should have subdirectories xml and images.")
-    parser.add_argument("--context-type", type=str, help="Type of context to extract (cell, column, nearby, full).")
-    parser.add_argument("--output_dir", type=str, help="Output directory (e.g. yolo-data/train), will create separate directories for each label.")
+    parser.add_argument("--train-xml", type=str, required=True, help="Path to training data (xml), will read all .xml files from the directory and its subdirectories.")
+    parser.add_argument("--dev-xml", type=str, required=True, help="Path to development data (xml), will read all .xml files from the directory and its subdirectories.")
+    parser.add_argument("--image-zip", type=str, required=True, help="Zip files with all downloaded images")
+    parser.add_argument("--ds-image-zip", type=str, required=True, help="Zip files with all ds images")
+    parser.add_argument("--context-type", type=str, default="cell", help="Type of context to extract (cell, column, nearby, full).")
+    parser.add_argument("--output-dir", type=str, help="Output directory (e.g. yolo-data/train), will create separate directories for each label.")
     args = parser.parse_args()
 
     if not os.path.isdir(args.output_dir):
@@ -223,4 +276,4 @@ if __name__ == "__main__":
 
     main(args)
 
-    # Usage: python create_data.py --train-data train/ --dev-data dev/ --output_dir yolo-data --context full
+    # Usage: python create_data.py --train-xml train/ --dev-xml dev/ ---image-zip moving_records_htr/images.zip  --output-dir yolo-data --context full
