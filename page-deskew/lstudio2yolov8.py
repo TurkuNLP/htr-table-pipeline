@@ -9,6 +9,7 @@ import numpy as np
 import imutils
 import math
 import glob
+from xml.etree import ElementTree as ET
 
 class KPoints:
 
@@ -22,6 +23,7 @@ class KPoints:
         self.img_path = img_path
         self.image = None
         self.w,self.h=None,None
+        self.skew_reskew_meta=None
 
     def possibly_read_image(self):
         if not self.image and self.img_path:
@@ -101,33 +103,105 @@ class KPoints:
         left_height = self.bm_int[1] - self.tm_int[1]
         dest_left=[[0,0],[left_width,0],[left_width,left_height],[0,left_height]]
         M_left=cv2.getPerspectiveTransform(np.array(source_left,dtype=np.float32),np.array(dest_left,dtype=np.float32))
-
+        M_left_reskew=cv2.getPerspectiveTransform(np.array(dest_left,dtype=np.float32),np.array(source_left,dtype=np.float32))
+        
         #3) right-hand transform
         source_right=[self.tm_int, self.tr_int, self.br_int, self.bm_int]
         right_width = self.tr_int[0] - self.tm_int[0]
         right_height = self.bm_int[1] - self.tm_int[1]
         dest_right=[[0,0],[right_width,0],[right_width,left_height],[0,right_height]]
         M_right=cv2.getPerspectiveTransform(np.array(source_right,dtype=np.float32),np.array(dest_right,dtype=np.float32))
+        M_right_reskew=cv2.getPerspectiveTransform(np.array(dest_right,dtype=np.float32),np.array(source_right,dtype=np.float32))
         
         warped_left=cv2.warpPerspective(self.image,M_left,(self.w,self.h))
         warped_right=cv2.warpPerspective(self.image,M_right,(self.w,self.h))
         combined_image = np.concatenate((warped_left[:left_height,:left_width], warped_right[:left_height,:right_width]), axis=1)
 
-        return combined_image
+        self.skew_reskew_meta={"M_left":M_left,"M_left_reskew":M_left_reskew,"M_right":M_right,"M_right_reskew":M_right_reskew,"dest_left":dest_left,"dest_right":dest_right,"source_left":source_left,"source_right":source_right,"left_width":left_width,"right_width":right_width} 
+        
+        return combined_image, self.skew_reskew_meta
     
-    def pose_dataset_line(self):
+    def deskew_xml_annotations(self,xml_filename_in,xml_filename_out,scale_factor=1.0):
+        #My god how I hate XML, why do they punish us with this
+        all_polygons=[] #let me just gather these in case I want to make a test printout of the fig
+        ns={"ns":"http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
+        with open(xml_filename_in,"rt") as f:
+            tree = ET.parse(f)
+            root = tree.getroot()
+            page_elem = root.find('.//ns:Page',ns)
+            if page_elem is not None:
+                xml_width = int(page_elem.attrib['imageWidth'])
+                xml_height = int(page_elem.attrib['imageHeight'])
+            else:
+                assert False, f"{xml_file} doesn't have any Page element"
+            assert self.w==xml_width and self.h==xml_height, f"Image dimensions do not match: image ({self.w}x{self.h}), xml ({xml_width}x{xml_height})"
+            for elem in root.findall('.//*[@points]', ns): #anything that has "points" attribute
+                points = elem.attrib['points']
+                new_points = []
+                for point in points.split():
+                    x, y = map(int, point.split(','))
+                    x_new, y_new = self.deskew_point((x, y))
+                    x_new=max(0,x_new)
+                    x_new=min(x_new,self.w)
+                    y_new=max(0,y_new)
+                    y_new=min(y_new,self.h)
+                    new_points.append((int(x_new*scale_factor),int(y_new*scale_factor)))
+                all_polygons.append(new_points)
+                elem.attrib['points'] = " ".join([f"{x},{y}" for x,y in new_points])
+        tree.write(xml_filename_out)
+        return(all_polygons)
+        
+    def deskew_point(self,point):
+        #This is a bit more complex, since some of the points may fall outside the transform source by few pixels
+        sources=[np.array(source,dtype=np.float32) for source in [self.skew_reskew_meta["source_left"],self.skew_reskew_meta["source_right"]]]
+        transforms=[self.skew_reskew_meta["M_left"],self.skew_reskew_meta["M_right"]]
+        x_offsets=[0,self.skew_reskew_meta["left_width"]]
+        x,y=point
+        #Which is its nearest source polygon?
+        dists=[]
+        for s_idx,source in enumerate(sources):
+            dist=cv2.pointPolygonTest(source,(x,y),True) #the higher this number, the more inside the point is
+            dists.append(dist)
+        max_dist_idx = np.argmax(dists)
+        M = transforms[max_dist_idx]
+
+        #print(f"Point:{x},{y}",sources)
+        
+        #now apply the transform
+        x_new,y_new=cv2.perspectiveTransform(np.array([[[x,y]]],dtype=np.float32),M)[0][0]
+        return x_new+x_offsets[max_dist_idx],y_new
+    
+    def pose_dataset_line(self,box_margin=5.0,fullpage_box=False):
+        #all the coordinates here are relative 0.0-100.0%
         top_y=min(y for x,y in [self.tl,self.tm,self.tr])
         bottom_y=max(y for x,y in [self.bl,self.bm,self.br])
         left_x=min(x for x,y in [self.tl,self.bl])
         right_x=max(x for x,y in [self.tr,self.br])
         center_xy=((left_x+right_x)/2,(top_y+bottom_y)/2)
-        width,height=right_x-left_x,bottom_y-top_y
-        line=f"0 {center_xy[0]} {center_xy[1]} {width} {height}"
+        width,height=right_x-left_x+box_margin,bottom_y-top_y+box_margin #let me grow the book by few %
+        if fullpage_box:
+            line=f"0 0.5 0.5 1.0 1.0"
+        else:
+            line=f"0 {trim01(center_xy[0]/100.0)} {trim01(center_xy[1]/100.0)} {trim01(width/100.0)} {trim01(height/100.0)}"
         for x,y in [self.tl,self.tm,self.tr,self.bl,self.bm,self.br]:
-            line+=f" {x} {y}"
+            line+=f" {trim01(x/100.0)} {trim01(y/100.0)}"
         return line
 
-      
+    def segm_dataset_line(self):
+        line="0 "
+        for x,y in [self.tl,self.tm,self.bm,self.bl]:
+            line+=f" {trim01(x/100.0)} {trim01(y/100.0)}"
+        line+="\n"
+        line+="1 "
+        for x,y in [self.tm,self.tr,self.br,self.bm]:
+            line+=f" {trim01(x/100.0)} {trim01(y/100.0)}"
+        return line
+
+
+def trim01(v):
+    v=max(0.0,v)
+    v=min(1.0,v)
+    return v
    
 def extract_kpoints_from_json(item):
     annotations=item["annotations"][0] #this is my annotation
@@ -144,11 +218,14 @@ def extract_kpoints_from_json(item):
     return KPoints(tl, tm, tr, bl, bm, br)
 
 
-def to_yolo(inp_files,out_dir,section,img_base2path):
+def to_yolo(inp_files,out_dir,section,img_base2path,xml_base2path,skew_rskew_meta_dict):
     #Make sure out_dir/section/images and out_dir/section/labels exist
     os.makedirs(f"{out_dir}/{section}/images", exist_ok=True)
     os.makedirs(f"{out_dir}/{section}/labels-pose", exist_ok=True)
+    os.makedirs(f"{out_dir}/{section}/labels-pose-fpbox", exist_ok=True)
+    os.makedirs(f"{out_dir}/{section}/labels-segm", exist_ok=True)
     os.makedirs(f"{out_dir}/{section}/deskewed_images", exist_ok=True)
+    os.makedirs(f"{out_dir}/{section}/deskewed_xmls", exist_ok=True)
     for inp_file in inp_files: #these are the jsons
         with open(inp_file, 'r') as file: #this be one json
             data = json.load(file)
@@ -159,6 +236,8 @@ def to_yolo(inp_files,out_dir,section,img_base2path):
                 
                 basename=item["file_upload"].split("-",1)[1] #remove the sample number
                 orig_img_path,collection_name=img_base2path[basename]
+                #do we have an xml file for this?
+                
                 try:
                     kpoints=extract_kpoints_from_json(item)
                     kpoints.img_path=orig_img_path
@@ -167,21 +246,28 @@ def to_yolo(inp_files,out_dir,section,img_base2path):
                     print(f"Skipping {item['file_upload']}: {e}")
                     kpoints=None
                 if kpoints:
-                    deskewed_img=kpoints.full_deskew()
+                    deskewed_img,skew_rskew_meta=kpoints.full_deskew()
                 else:
-                    deskewed_img=None
+                    deskewed_img,skew_rskew_meta=None,None
 
                 #1) save the image into out_dir/collection/basename.jpg
                 img_path=f"{out_dir}/{section}/deskewed_images/man-ds-{collection_name}"
                 os.makedirs(img_path, exist_ok=True)
-                basename=basename.split("_",1)[1] #remove the transkribus number, note it has .jpg at the end
+                
+                #remove the transkribus number, if any
+                parts=basename.split("_",1)
+                if len(parts)==2 and parts[0].isnumeric(): #yeah...
+                    basename=parts[1]
+                #note we still have a .jpg at the end!
                 if deskewed_img is None:
                     deskewed_img=cv2.imread(orig_img_path)
 
                 if deskewed_img.shape[0] > 2500 or deskewed_img.shape[1] > 2500:
                     scale_factor = min(2500 / deskewed_img.shape[0], 2500 / deskewed_img.shape[1])
                     deskewed_img = cv2.resize(deskewed_img, None, fx=scale_factor, fy=scale_factor)
-                cv2.imwrite(f"{img_path}/{basename}", deskewed_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                else:
+                    scale_factor = 1.0
+                cv2.imwrite(f"{img_path}/mands-{basename}", deskewed_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
                 if not kpoints:
                     continue
@@ -190,11 +276,26 @@ def to_yolo(inp_files,out_dir,section,img_base2path):
                 cv2.imwrite(img_path, cv2.imread(orig_img_path), [cv2.IMWRITE_JPEG_QUALITY, 90])
                 #2) save the label into out_dir/collection/basename.txt
                 with open(f"{out_dir}/{section}/labels-pose/{basename.replace('.jpg','.txt')}","wt") as lab_file:
-                    print(kpoints.pose_dataset_line(), file=lab_file)
-                
+                    print(kpoints.pose_dataset_line(box_margin=2.0), file=lab_file)
+                with open(f"{out_dir}/{section}/labels-pose-fpbox/{basename.replace('.jpg','.txt')}","wt") as lab_file:
+                    print(kpoints.pose_dataset_line(fullpage_box=True), file=lab_file)
+                with open(f"{out_dir}/{section}/labels-segm/{basename.replace('.jpg','.txt')}","wt") as lab_file:
+                    print(kpoints.segm_dataset_line(), file=lab_file)
+                #3) If we have the xml for this image, now is the time to deskew it too
+                xml_base=basename.replace(".jpg",".xml")
+                if xml_base in xml_base2path:
+                    print("Deskewing xml for",basename)
+                    os.makedirs(f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}",exist_ok=True)
+                    all_polygons=kpoints.deskew_xml_annotations(xml_base2path[xml_base],f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}/mands-{xml_base}",scale_factor=scale_factor)
+                    write_debug_deskew_img(deskewed_img,all_polygons,f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}/debug-{basename}")
+                skew_rskew_meta_dict["mands-"+basename]=skew_rskew_meta
 
-
-                
+def write_debug_deskew_img(img,all_polygons,out_fname):
+    overlay = img.copy()
+    for polygon in all_polygons:
+        cv2.fillPoly(overlay, [np.array(polygon, dtype=np.int32)], color=(0, 0, 255))
+    cv2.addWeighted(overlay, 0.2, img, 0.8, 0, img)
+    cv2.imwrite(out_fname,img,[cv2.IMWRITE_JPEG_QUALITY, 90])
 
 #     rec_width_percent=10
 #     #rec_width_percent=rec_width/annotations[0]["result"][0]["original_width"]
@@ -263,15 +364,36 @@ def gather_images(img_source_dir):
         name2path[basename]=(fname,collection_name)
     return name2path
 
+def gather_xml_files(img_source_dirs):
+    name2path={}
+    all_xml_files=[]
+    for img_source_dir in img_source_dirs:
+        all_xml_files.extend(glob.glob(f"{img_source_dir}/*.xml"))
+
+    for fname in all_xml_files:
+        basename=os.path.basename(fname)
+        name2path[basename]=fname
+    return name2path
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert label studio format to YOLOv8 format')
     parser.add_argument('--train-files', nargs='+', default=[], help='Path to the json annotation of the training set')
     parser.add_argument('--val-files', nargs='+', default=[], help='Path to the json annotation of the validation set')
+    parser.add_argument('--test-files', nargs='+', default=[], help='Path to the json annotation of the test set')
     parser.add_argument('--img-source-dir', default="data/images", help='Path to the image source directory')
+    parser.add_argument('--xml-source-dir', nargs='+', default=[], help='Path to the source directory with the transkribus xml annotation files')
+    parser.add_argument('--tr-matrices',default=None,help="store the matrices into this pickle file")
     args = parser.parse_args()
 
     os.makedirs("midpoints-yolov8", exist_ok=True)
     img_name2path=gather_images(args.img_source_dir)
-    to_yolo(args.train_files,"midpoints-yolov8","train",img_name2path)
-    to_yolo(args.val_files,"midpoints-yolov8","val",img_name2path)
+    xml_name2path=gather_xml_files(args.xml_source_dir)
+    
+
+    skew_reskew_meta={} #key:mands_basename.jpg val:reskew metadata dict
+    if args.train_files:
+        to_yolo(args.train_files,"midpoints-yolov8","train",img_name2path,xml_name2path,skew_reskew_meta)
+    if args.val_files:
+        to_yolo(args.val_files,"midpoints-yolov8","val",img_name2path,xml_name2path,skew_reskew_meta)
+    if args.test_files:
+        to_yolo(args.test_files,"midpoints-yolov8","test",img_name2path,xml_name2path,skew_reskew_meta)
