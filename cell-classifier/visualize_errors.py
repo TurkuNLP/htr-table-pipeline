@@ -5,7 +5,7 @@ import os
 import torch
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
-import gc
+import cv2
 
 def read_data(directory):
     # Read the data from the directory
@@ -29,15 +29,39 @@ def predict(args):
     model = YOLO(args.model) # load a pretrained model (recommended for training)
 
     # predict
-    results = model.predict(files, batch=12, stream=True)
-    #results = model.predict(files, batch=12)
-    print(results)
     pred_labels = []
-    for r in results:
+    for i, f in enumerate(files):
+        r = model.predict(f, verbose=False)[0]
         max_index = torch.argmax(r.probs.data).item()
         label = r.names[max_index]
         score = r.probs.data[max_index].item()
         pred_labels.append((label, score))
+        if label != true_labels[i]:
+            print(f"File: {files[i]}: True label: {true_labels[i]}, Predicted label: {label}, Score: {score}")
+            img = cv2.imread(files[i])
+            cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
+            window_name = f"True label: {true_labels[i]}, Predicted label: {label}"
+            cv2.imshow(window_name, img)
+            cv2.waitKey(0)
+            cv2.destroyWindow(window_name) 
+
+        
+    #results = model.predict(files, batch=12)
+    #print(results)
+    
+    #for i, r in enumerate(results):
+    #    max_index = torch.argmax(r.probs.data).item()
+    #    label = r.names[max_index]
+    #    score = r.probs.data[max_index].item()
+    #    pred_labels.append((label, score))
+    #    if label != true_labels[i]:
+    #        print(f"File: {files[i]}: True label: {true_labels[i]}, Predicted label: {label}, Score: {score}")
+            #img = cv2.imread(files[i])
+            #cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
+            #cv2.imshow(f"True label: {true_labels[i]}, Predicted: {label}", img)
+            #cv2.waitKey(0)
+
+
     
 
     # compare

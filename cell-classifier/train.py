@@ -5,7 +5,7 @@ import argparse
 def train(args):
     model = YOLO('yolov8n-cls.pt') # load a pretrained model (recommended for training)
     # Train the model
-    model.train(data=args.data, epochs=5)
+    model.train(data=args.data, epochs=5, batch=64)            
     metrics = model.val()
     print(metrics)
     print(metrics.top1)
@@ -21,4 +21,4 @@ if __name__ == "__main__":
 
     train(args)
     
-    # Usage: python train.py --data yolo-data --model trained-yolo-model.pt
+    # Usage: python train.py --data yolo-data --save-model trained-yolo-model.pt
