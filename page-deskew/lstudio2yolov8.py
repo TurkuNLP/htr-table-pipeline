@@ -26,7 +26,7 @@ class KPoints:
         self.skew_reskew_meta=None
 
     def possibly_read_image(self):
-        if not self.image and self.img_path:
+        if self.image is None and self.img_path:
             self.image = cv2.imread(self.img_path)
             self.w,self.h=self.image.shape[1],self.image.shape[0]
 
@@ -40,6 +40,20 @@ class KPoints:
             self.bm_int = calculate_int_coordinates(self.bm)
             self.br_int = calculate_int_coordinates(self.br)
 
+
+    def extract_zoomed_corners(self,fuzz=0.05,corner_size=0.15):
+        """Extract the zoomed corners, with a bit of fuzz, these are given as percentages (0,1)"""
+        zoomed_corners=[]
+        self.possibly_read_image()
+        int_fuzz = int(self.w * fuzz)
+        int_corner_size = int(self.w * corner_size)
+        for point in [self.tl_int, self.tm_int, self.tr_int, self.bl_int, self.bm_int, self.br_int]:
+            #Pretend the point is randomly up to int_fuzz off
+            #So this is the center of the corner area
+            center_point = np.array([point[0] + np.random.randint(-int_fuzz, int_fuzz), point[1] + np.random.randint(-int_fuzz, int_fuzz)]).flatten().tolist()
+            patch, keypoint_new_coords, _ = crop_patch(self.image, center_point, point, (int_corner_size, int_corner_size))
+            zoomed_corners.append((patch, center_point, keypoint_new_coords))
+        return zoomed_corners
 
     def estimate_lr_deskew(self):
         """Old code to estimate skew angle on both sides of the image, hopefully obsoleted by
@@ -121,7 +135,7 @@ class KPoints:
         
         return combined_image, self.skew_reskew_meta
     
-    def deskew_xml_annotations(self,xml_filename_in,xml_filename_out,scale_factor=1.0):
+    def deskew_xml_annotations(self,xml_filename_in,xml_filename_out,deskewed_img_size,scale_factor=1.0,filename_prepend="mands-"):
         #My god how I hate XML, why do they punish us with this
         all_polygons=[] #let me just gather these in case I want to make a test printout of the fig
         ns={"ns":"http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
@@ -132,9 +146,12 @@ class KPoints:
             if page_elem is not None:
                 xml_width = int(page_elem.attrib['imageWidth'])
                 xml_height = int(page_elem.attrib['imageHeight'])
+                page_elem.attrib['imageFilename']=filename_prepend+page_elem.attrib['imageFilename']
             else:
                 assert False, f"{xml_file} doesn't have any Page element"
             assert self.w==xml_width and self.h==xml_height, f"Image dimensions do not match: image ({self.w}x{self.h}), xml ({xml_width}x{xml_height})"
+            page_elem.attrib['imageWidth']=str(int(deskewed_img_size[0]))
+            page_elem.attrib['imageHeight']=str(int(deskewed_img_size[1]))
             for elem in root.findall('.//*[@points]', ns): #anything that has "points" attribute
                 points = elem.attrib['points']
                 new_points = []
@@ -198,12 +215,88 @@ class KPoints:
         return line
 
 
+def crop_patch(image,center,keypoint,patchsize):
+    """
+    image
+    center -> center of the patch, given as (x,y)
+    keypoint -> a keypoint on the patch, given as (x,y)
+    patchsize -> given as (dx,dy); center-(dx,dy) will be top-left,
+                center+(dx,dy) will be bottom right, i.e. the width will be (2dx,2dy)
+
+    returns:
+    (cropped_patch, -> image
+     keypoint_new_coords, -> coordinates of the keypoint in the cropped patch
+     bbox -> the bounding box of the patch for debug purposes)
+    """
+    keypoint=np.array([keypoint],int)
+    center=np.array([center],int)
+    dxdy=np.array([patchsize],int) #width,height
+
+    # Bounding box, not respecting image boundaries (yet)     
+    bbox=np.stack([center+dxdy*[-1,-1],center+dxdy*[1,-1],center+dxdy*[1,1],center+dxdy*[-1,1]]).squeeze()
+    # amount of left and top crop, as negative values, i.e. areas of the patch which
+    # fall outside of the original image
+    # the coordinates in the new cropped image must be corrected by this amount
+    trim_correction=np.min(bbox,axis=0) 
+    trim_correction[trim_correction>0]=0
+
+    # Now I can trim the bbox
+    # the bbox is in (x,y) order but shape is (height,width)
+    bbox[:, 0] = np.clip(bbox[:, 0], 0, image.shape[1]) 
+    bbox[:, 1] = np.clip(bbox[:, 1], 0, image.shape[0])
+
+    center_new_coordinates=dxdy+trim_correction #center, in the new image
+    keypoint_new_coordinates=center_new_coordinates+(keypoint-center)
+
+    # Now I can actually prepare the patch, which means I need to crop
+    # the patch bounding box by the image
+    # I cannot believe there ain't any function for this in CV2
+    # (surely there is, just didn't find it)
+    x_coords = bbox[:, 0]
+    y_coords = bbox[:, 1]
+    # Calculate the center of the rectangle
+    x_min, x_max = np.min(x_coords), np.max(x_coords)
+    y_min, y_max = np.min(y_coords), np.max(y_coords)
+    width = x_max - x_min
+    height = y_max - y_min
+    center_x = x_min + width // 2
+    center_y = y_min + height // 2
+    # Define the size of the patch to extract
+    patch_size = (int(width), int(height))
+    #print("patch_size",patch_size)
+    #print("center",(center_x,center_y))
+    cropped_img = cv2.getRectSubPix(image, patch_size, (float(center_x), float(center_y)))
+    return cropped_img,keypoint_new_coordinates.flatten().tolist(),bbox
+
+# ### Let's test
+# image = cv2.imread("Test.png")
+# image_copy=image.copy()
+
+# keypoint=(500,270)
+# center=(450,300)
+# patchsize=(100,300)
+
+# cropped_img,kpoint_new_coords,bbox=crop_patch(image,center,keypoint,patchsize)
+
+
+# cv2.drawMarker(image_copy, center, color=(0, 255, 0), markerType=cv2.MARKER_CROSS,
+#             markerSize=20, thickness=2, line_type=cv2.LINE_AA)
+# cv2.drawMarker(image_copy, keypoint, color=(255, 0, 0), markerType=cv2.MARKER_CROSS,
+#             markerSize=20, thickness=2, line_type=cv2.LINE_AA)
+# cv2.polylines(image_copy, [bbox], isClosed=True, color=(0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+# cv2_imshow(image_copy)
+
+# cv2.drawMarker(cropped_img, kpoint_new_coords, color=(255, 0, 0), markerType=cv2.MARKER_CROSS,
+#             markerSize=20, thickness=2, line_type=cv2.LINE_AA)
+# cv2_imshow(cropped_img)
+
+
 def trim01(v):
     v=max(0.0,v)
     v=min(1.0,v)
     return v
    
-def extract_kpoints_from_json(item):
+def extract_kpoints_from_labelstudio_json(item):
     annotations=item["annotations"][0] #this is my annotation
     
     points=[(point["value"]["x"], point["value"]["y"]) for point in annotations["result"]]
@@ -211,189 +304,166 @@ def extract_kpoints_from_json(item):
         raise ValueError("There should be 6 keypoints")
     
     points.sort(key=lambda x: x[1]) #sorted on Y, i.e. first 3 are the top row of points, second 3 are the bottom row of points
+    #sort the top row by X
     points[:3] = sorted(points[:3], key=lambda x: x[0])
+    #sort the bottom row by X
     points[3:] = sorted(points[3:], key=lambda x: x[0])
     
     tl, tm, tr, bl, bm, br = points
     return KPoints(tl, tm, tr, bl, bm, br)
 
 
-def to_yolo(inp_files,out_dir,section,img_base2path,xml_base2path,skew_rskew_meta_dict):
+def to_yolo(inp_files,section,img_basename2path,xml_basename2path,skew_rskew_meta_dict,args):
     #Make sure out_dir/section/images and out_dir/section/labels exist
-    os.makedirs(f"{out_dir}/{section}/images", exist_ok=True)
-    os.makedirs(f"{out_dir}/{section}/labels-pose", exist_ok=True)
-    os.makedirs(f"{out_dir}/{section}/labels-pose-fpbox", exist_ok=True)
-    os.makedirs(f"{out_dir}/{section}/labels-segm", exist_ok=True)
-    os.makedirs(f"{out_dir}/{section}/deskewed_images", exist_ok=True)
-    os.makedirs(f"{out_dir}/{section}/deskewed_xmls", exist_ok=True)
+    os.makedirs(f"{args.dataset_out_dir}/{section}/images", exist_ok=True)
+    os.makedirs(f"{args.dataset_out_dir}/{section}/labels", exist_ok=True)
+    os.makedirs(f"{args.dataset_out_dir}/{section}/deskewed_images", exist_ok=True)
+    os.makedirs(f"{args.dataset_out_dir}/{section}/deskewed_xmls", exist_ok=True)
+
+    os.makedirs(f"{args.dataset_stg2_corners_out_dir}/{section}/images", exist_ok=True)
+    os.makedirs(f"{args.dataset_stg2_corners_out_dir}/{section}/labels", exist_ok=True)
+
     for inp_file in inp_files: #these are the jsons
         with open(inp_file, 'r') as file: #this be one json
             data = json.load(file)
             for item in data:
-                if len(item["annotations"])!=1: #there should be 1 annotation, skip if not
-                    print(f"Skipping {item['file_upload']} there are no annotations!")
-                    continue
+                #Get the basename and collection name
                 
-                basename=item["file_upload"].split("-",1)[1] #remove the sample number
-                orig_img_path,collection_name=img_base2path[basename]
-                #do we have an xml file for this?
-                
-                try:
-                    kpoints=extract_kpoints_from_json(item)
-                    kpoints.img_path=orig_img_path
-                    
-                except ValueError as e:
-                    print(f"Skipping {item['file_upload']}: {e}")
-                    kpoints=None
-                if kpoints:
-                    deskewed_img,skew_rskew_meta=kpoints.full_deskew()
-                else:
-                    deskewed_img,skew_rskew_meta=None,None
+                #1) remove the sample number from labelstudio
+                basename=item["file_upload"].split("-",1)[1]
+                #find the original image file's path by its basename 
+                orig_img_path,collection_name=img_basename2path[basename]
 
-                #1) save the image into out_dir/collection/basename.jpg
-                img_path=f"{out_dir}/{section}/deskewed_images/man-ds-{collection_name}"
-                os.makedirs(img_path, exist_ok=True)
-                
-                #remove the transkribus number, if any
+                #2) some images have the transkribus number by accident, trim it out if found
                 parts=basename.split("_",1)
                 if len(parts)==2 and parts[0].isnumeric(): #yeah...
                     basename=parts[1]
                 #note we still have a .jpg at the end!
-                if deskewed_img is None:
-                    deskewed_img=cv2.imread(orig_img_path)
+                
+                if len(item["annotations"])!=1: #there should be 1 annotation, skip if not
+                    print(f"{item['file_upload']}: there are no annotations!")
+                    kpoints=None
+                else:
+                    try:
+                        kpoints=extract_kpoints_from_labelstudio_json(item)
+                        kpoints.img_path=orig_img_path
+                    except ValueError as e:
+                        print(f"{item['file_upload']}: {e}")
+                        kpoints=None
+                
+                #3) DESKEW
+                #I found the 6-point annotation and can now deskew the whole thing
+                if kpoints is not None:
+                    deskewed_img,skew_rskew_meta=kpoints.full_deskew()
+                else: #no keypoints, just copy the image over
+                    deskewed_img,skew_rskew_meta=cv2.imread(orig_img_path),None
 
+                #1) save the image into out_dir/collection/man-ds-basename.jpg
+                mands_img_pathdir=f"{args.dataset_out_dir}/{section}/mandeskewed_images/mands-{collection_name}"
+                os.makedirs(mands_img_pathdir, exist_ok=True)
+                
                 if deskewed_img.shape[0] > 2500 or deskewed_img.shape[1] > 2500:
                     scale_factor = min(2500 / deskewed_img.shape[0], 2500 / deskewed_img.shape[1])
                     deskewed_img = cv2.resize(deskewed_img, None, fx=scale_factor, fy=scale_factor)
                 else:
                     scale_factor = 1.0
-                cv2.imwrite(f"{img_path}/mands-{basename}", deskewed_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                cv2.imwrite(f"{mands_img_pathdir}/mands-{basename}", deskewed_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
+                #No labels to write for this one, so we're done if there are no kpoints
                 if not kpoints:
                     continue
-                #1) save the image into out_dir/collection/basename.jpg (original)
-                img_path=f"{out_dir}/{section}/images/{basename}"
-                cv2.imwrite(img_path, cv2.imread(orig_img_path), [cv2.IMWRITE_JPEG_QUALITY, 90])
-                #2) save the label into out_dir/collection/basename.txt
-                with open(f"{out_dir}/{section}/labels-pose/{basename.replace('.jpg','.txt')}","wt") as lab_file:
-                    print(kpoints.pose_dataset_line(box_margin=2.0), file=lab_file)
-                with open(f"{out_dir}/{section}/labels-pose-fpbox/{basename.replace('.jpg','.txt')}","wt") as lab_file:
-                    print(kpoints.pose_dataset_line(fullpage_box=True), file=lab_file)
-                with open(f"{out_dir}/{section}/labels-segm/{basename.replace('.jpg','.txt')}","wt") as lab_file:
-                    print(kpoints.segm_dataset_line(), file=lab_file)
-                #3) If we have the xml for this image, now is the time to deskew it too
-                xml_base=basename.replace(".jpg",".xml")
-                if xml_base in xml_base2path:
-                    print("Deskewing xml for",basename)
-                    os.makedirs(f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}",exist_ok=True)
-                    all_polygons=kpoints.deskew_xml_annotations(xml_base2path[xml_base],f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}/mands-{xml_base}",scale_factor=scale_factor)
-                    write_debug_deskew_img(deskewed_img,all_polygons,f"{out_dir}/{section}/deskewed_xmls/man-ds-xml-{collection_name}/debug-{basename}")
                 skew_rskew_meta_dict["mands-"+basename]=skew_rskew_meta
+                #4) WRITE OUT LABELS FOR TRAINING THE DESKEW RECOGNITION
+
+                #4.1) save the image into out_dir/collection/basename.jpg (original)
+                img_path=f"{args.dataset_out_dir}/{section}/images/{basename}"
+                cv2.imwrite(img_path, cv2.imread(orig_img_path), [cv2.IMWRITE_JPEG_QUALITY, 90])
+                #4.2) save the label into out_dir/collection/basename.txt
+                with open(f"{args.dataset_out_dir}/{section}/labels/{basename.replace('.jpg','.txt')}","wt") as lab_file:
+                    print(kpoints.pose_dataset_line(box_margin=2.0), file=lab_file)
+                #3) If we have the xml for this image, now is the time to deskew it too
+                xml_basename=basename.replace(".jpg",".xml")
+                if xml_basename in xml_basename2path:
+                    print("Deskewing xml for",basename)
+                    xml_img_pathdir=f"{args.dataset_out_dir}/{section}/deskewed_xmls/mands-xml-{collection_name}"
+                    os.makedirs(xml_img_pathdir,exist_ok=True)
+                    all_polygons=kpoints.deskew_xml_annotations(xml_basename2path[xml_basename],
+                                                                f"{xml_img_pathdir}/mands-{xml_basename}",
+                                                                deskewed_img_size=(deskewed_img.shape[1],deskewed_img.shape[0]),
+                                                                scale_factor=scale_factor)
+                    debug_xml_img_pathdir=f"{args.dataset_out_dir}/{section}/deskewed_xmls-debug-images/mands-xml-{collection_name}"
+                    os.makedirs(debug_xml_img_pathdir,exist_ok=True)
+                    write_debug_deskew_img(deskewed_img,all_polygons,f"{debug_xml_img_pathdir}/debug-{basename}")
+                
+                #4) make stage2 images on the corners
+                zoomed_corners=kpoints.extract_zoomed_corners(fuzz=0.05,corner_size=0.08)
+                for idx,(patch,center_point,keypoint_new_coords) in enumerate(zoomed_corners):
+                    patch_width,patch_height=patch.shape[1],patch.shape[0]
+                    #Let's make sure the Yolo region is square no matter what the patch size comes out to be
+                    if patch_width>=patch_height:
+                        w,h=0.1*patch_height/patch_width,0.1
+                    else:
+                        w,h=0.1,0.1*patch_width/patch_height
+
+                    cv2.imwrite(f"{args.dataset_stg2_corners_out_dir}/{section}/images/{basename.replace('.jpg','')}_{idx}.jpg",patch,[cv2.IMWRITE_JPEG_QUALITY, 90])
+                    with open(f"{args.dataset_stg2_corners_out_dir}/{section}/labels/{basename.replace('.jpg','')}_{idx}.txt","wt") as lab_file:
+                        print("0", end=" ", file=lab_file)
+                        print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height} {w} {h}", end=" ", file=lab_file)
+                        print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height}", end=" ", file=lab_file)
+                        print("", file=lab_file)
 
 def write_debug_deskew_img(img,all_polygons,out_fname):
     overlay = img.copy()
     for polygon in all_polygons:
-        cv2.fillPoly(overlay, [np.array(polygon, dtype=np.int32)], color=(0, 0, 255))
+        cv2.fillPoly(overlay, [np.array(polygon, dtype=np.int32)], color=(0, 55, 55))
+        cv2.polylines(overlay, [np.array(polygon, dtype=np.int32)], isClosed=True, color=(0, 0, 255), thickness=2)
     cv2.addWeighted(overlay, 0.2, img, 0.8, 0, img)
-    cv2.imwrite(out_fname,img,[cv2.IMWRITE_JPEG_QUALITY, 90])
+    cv2.imwrite(out_fname,img,[cv2.IMWRITE_JPEG_QUALITY, 90])    
 
-#     rec_width_percent=10
-#     #rec_width_percent=rec_width/annotations[0]["result"][0]["original_width"]
-    
-#     top_left=kpoint_0[0]-rec_width_percent/2,kpoint_0[1]
-#     top_right=kpoint_0[0]+rec_width_percent/2,kpoint_0[1]
-#     bottom_left=kpoint_1[0]-rec_width_percent/2,kpoint_1[1]
-#     bottom_right=kpoint_1[0]+rec_width_percent/2,kpoint_1[1]
-
-#     return top_left,top_right,bottom_left,bottom_right
-
-# def to_yolo(inp_file,out_dir,img_source_dir):
-#     with open(inp_file, 'r') as file:
-#         data = json.load(file)
-#         for item in data:
-#             if len(item["annotations"])!=1: #there should be 1 annotation, skip if not
-#                 continue
-#             if len(item["annotations"][0]["result"])!=2: #there should be 2 keypoints, skip if not
-#                 continue
-#             top_left,top_right,bottom_left,bottom_right=extract_bb(item)
-#             #Now I need to make the Yolo OBB files out of this
-#             img_name=item["file_upload"].replace(".jpg","")
-#             label_path=f"{out_dir}/labels/{section(img_name)}"
-#             os.makedirs(label_path, exist_ok=True)
-#             with open(f"{label_path}/{img_name}.txt","wt") as lab_file:
-#                 print("0", end=" ", file=lab_file)
-#                 for corner in top_left, top_right, bottom_left, bottom_right:
-#                     print(f"{corner[0]/100} {corner[1]/100}", end=" ", file=lab_file)
-#                 print("", file=lab_file)
-#             img_path=f"{out_dir}/images/{section(img_name)}"
-#             os.makedirs(img_path, exist_ok=True)
-#             os.system(f"cp {img_source_dir}/{img_name}.jpg {img_path}/{img_name}.jpg")
-
-#     yaml_data = {
-#         'path': '.',
-#         'train': 'images/train',
-#         'val': 'images/val',
-#         'test': 'images/test',
-#         'names': {
-#             0: 'midpoint'
-#         }
-#     }
-
-#     with open(f'{out_dir}/dataset.yaml', 'w') as yaml_file:
-#         yaml.dump(yaml_data, yaml_file)
-    
-
-def section(fname):
-    hashed_value = hashlib.sha256(fname.encode("utf-8")).hexdigest()
-    m = int(hashed_value, 16) % 10
-    if m==0:
-        return "test"
-    elif m==1:
-        return "val"
-    else:
-        return "train"
-    
     
 def gather_images(img_source_dir):
     all_img_files=glob.glob(f"{img_source_dir}/*/*.jpg")
-    name2path={}
+    basename2path={}
     for fname in all_img_files:
         path_parts=fname.split("/")
         basename=path_parts[-1]
         collection_name=path_parts[-2]
-        name2path[basename]=(fname,collection_name)
-    return name2path
+        basename2path[basename]=(fname,collection_name)
+    return basename2path
 
 def gather_xml_files(img_source_dirs):
-    name2path={}
+    basename2path={}
     all_xml_files=[]
     for img_source_dir in img_source_dirs:
         all_xml_files.extend(glob.glob(f"{img_source_dir}/*.xml"))
 
     for fname in all_xml_files:
         basename=os.path.basename(fname)
-        name2path[basename]=fname
-    return name2path
+        basename2path[basename]=fname
+    return basename2path
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert label studio format to YOLOv8 format')
-    parser.add_argument('--train-files', nargs='+', default=[], help='Path to the json annotation of the training set')
-    parser.add_argument('--val-files', nargs='+', default=[], help='Path to the json annotation of the validation set')
-    parser.add_argument('--test-files', nargs='+', default=[], help='Path to the json annotation of the test set')
+    parser.add_argument('--train-files', nargs='+', default=[], help='Path to the json annotations of the training set')
+    parser.add_argument('--val-files', nargs='+', default=[], help='Path to the json annotations of the validation set')
+    parser.add_argument('--test-files', nargs='+', default=[], help='Path to the json annotations of the test set')
     parser.add_argument('--img-source-dir', default="data/images", help='Path to the image source directory')
     parser.add_argument('--xml-source-dir', nargs='+', default=[], help='Path to the source directory with the transkribus xml annotation files')
-    parser.add_argument('--tr-matrices',default=None,help="store the matrices into this pickle file")
+    parser.add_argument('--tr-matrices',default=None,help="Store the matrices into this pickle file")
+    parser.add_argument('--dataset-out-dir', default="midpoints-yolov8", help='Path to the output directory of the main dataset')
+    parser.add_argument('--dataset-stg2-corners-out-dir', default="midpoints-yolov8-corners", help='Path to the output directory of the stage2 corner dataset')
     args = parser.parse_args()
 
-    os.makedirs("midpoints-yolov8", exist_ok=True)
-    img_name2path=gather_images(args.img_source_dir)
-    xml_name2path=gather_xml_files(args.xml_source_dir)
+    os.makedirs(args.dataset_out_dir, exist_ok=True)
+    os.makedirs(args.dataset_stg2_corners_out_dir, exist_ok=True)
+    img_basename2path=gather_images(args.img_source_dir)
+    xml_basename2path=gather_xml_files(args.xml_source_dir)
     
 
     skew_reskew_meta={} #key:mands_basename.jpg val:reskew metadata dict
     if args.train_files:
-        to_yolo(args.train_files,"midpoints-yolov8","train",img_name2path,xml_name2path,skew_reskew_meta)
+        to_yolo(args.train_files,"train",img_basename2path,xml_basename2path,skew_reskew_meta,args)
     if args.val_files:
-        to_yolo(args.val_files,"midpoints-yolov8","val",img_name2path,xml_name2path,skew_reskew_meta)
+        to_yolo(args.val_files,"val",img_basename2path,xml_basename2path,skew_reskew_meta,args)
     if args.test_files:
-        to_yolo(args.test_files,"midpoints-yolov8","test",img_name2path,xml_name2path,skew_reskew_meta)
+        to_yolo(args.test_files,"test",img_basename2path,xml_basename2path,skew_reskew_meta,args)
