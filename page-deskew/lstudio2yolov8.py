@@ -41,19 +41,35 @@ class KPoints:
             self.br_int = calculate_int_coordinates(self.br)
 
 
-    def extract_zoomed_corners(self,fuzz=0.05,corner_size=0.15):
-        """Extract the zoomed corners, with a bit of fuzz, these are given as percentages (0,1)"""
+    def extract_zoomed_corners(self,fuzz=0.05,corner_size=0.25,flip=False):
+        """Extract the zoomed corners, with a bit of fuzz, these are given as percentages (0,1)
+        
+        if flip is True, the corner will always be top left and the mid will always be on the upper edge"""
         zoomed_corners=[]
         self.possibly_read_image()
         int_fuzz = int(self.w * fuzz)
         int_corner_size = int(self.w * corner_size)
-        for point in [self.tl_int, self.tm_int, self.tr_int, self.bl_int, self.bm_int, self.br_int]:
+        for point,flipH,flipV in [(self.tl_int,False,False),(self.tm_int,False,False),(self.tr_int,True,False),(self.bl_int,False,True),(self.bm_int,False,True),(self.br_int,True,True)]:
             #Pretend the point is randomly up to int_fuzz off
             #So this is the center of the corner area
             center_point = np.array([point[0] + np.random.randint(-int_fuzz, int_fuzz), point[1] + np.random.randint(-int_fuzz, int_fuzz)]).flatten().tolist()
             patch, keypoint_new_coords, _ = crop_patch(self.image, center_point, point, (int_corner_size, int_corner_size))
-            zoomed_corners.append((patch, center_point, keypoint_new_coords))
+            if flip:
+                patch,flipped_points=self.flip(patch,[keypoint_new_coords],flipH,flipV)
+                keypoint_new_coords=flipped_points[0]
+            zoomed_corners.append((patch, center_point, keypoint_new_coords,flipH,flipV))
         return zoomed_corners
+
+    def flip(self,img,points,flipH,flipV):
+        H,W=img.shape[:2]
+        if flipH:
+            img=cv2.flip(img,1)
+            points=[(W-x,y) for x,y in points]
+        if flipV:
+            img=cv2.flip(img,0)
+            points=[(x,H-y) for x,y in points]
+        return img,points
+
 
     def estimate_lr_deskew(self):
         """Old code to estimate skew angle on both sides of the image, hopefully obsoleted by
@@ -321,6 +337,7 @@ def to_yolo(inp_files,section,img_basename2path,xml_basename2path,skew_rskew_met
     os.makedirs(f"{args.dataset_out_dir}/{section}/deskewed_xmls", exist_ok=True)
 
     os.makedirs(f"{args.dataset_stg2_corners_out_dir}/{section}/images", exist_ok=True)
+    os.makedirs(f"{args.dataset_stg2_corners_out_dir}/{section}/debug-images", exist_ok=True)
     os.makedirs(f"{args.dataset_stg2_corners_out_dir}/{section}/labels", exist_ok=True)
 
     for inp_file in inp_files: #these are the jsons
@@ -396,14 +413,14 @@ def to_yolo(inp_files,section,img_basename2path,xml_basename2path,skew_rskew_met
                     write_debug_deskew_img(deskewed_img,all_polygons,f"{debug_xml_img_pathdir}/debug-{basename}")
                 
                 #4) make stage2 images on the corners
-                zoomed_corners=kpoints.extract_zoomed_corners(fuzz=0.05,corner_size=0.08)
-                for idx,(patch,center_point,keypoint_new_coords) in enumerate(zoomed_corners):
+                zoomed_corners=kpoints.extract_zoomed_corners(fuzz=0.05,corner_size=0.15,flip=True)
+                for idx,(patch,center_point,keypoint_new_coords,flipH,flipV) in enumerate(zoomed_corners):
                     patch_width,patch_height=patch.shape[1],patch.shape[0]
                     #Let's make sure the Yolo region is square no matter what the patch size comes out to be
                     if patch_width>=patch_height:
-                        w,h=0.1*patch_height/patch_width,0.1
+                        w,h=0.2*patch_height/patch_width,0.2
                     else:
-                        w,h=0.1,0.1*patch_width/patch_height
+                        w,h=0.2,0.2*patch_width/patch_height
 
                     cv2.imwrite(f"{args.dataset_stg2_corners_out_dir}/{section}/images/{basename.replace('.jpg','')}_{idx}.jpg",patch,[cv2.IMWRITE_JPEG_QUALITY, 90])
                     with open(f"{args.dataset_stg2_corners_out_dir}/{section}/labels/{basename.replace('.jpg','')}_{idx}.txt","wt") as lab_file:
@@ -411,6 +428,7 @@ def to_yolo(inp_files,section,img_basename2path,xml_basename2path,skew_rskew_met
                         print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height} {w} {h}", end=" ", file=lab_file)
                         print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height}", end=" ", file=lab_file)
                         print("", file=lab_file)
+                    write_debug_corner_img(patch,keypoint_new_coords,f"{args.dataset_stg2_corners_out_dir}/{section}/debug-images/debug-{basename.replace('.jpg','')}_{idx}.jpg")
 
 def write_debug_deskew_img(img,all_polygons,out_fname):
     overlay = img.copy()
@@ -418,7 +436,13 @@ def write_debug_deskew_img(img,all_polygons,out_fname):
         cv2.fillPoly(overlay, [np.array(polygon, dtype=np.int32)], color=(0, 55, 55))
         cv2.polylines(overlay, [np.array(polygon, dtype=np.int32)], isClosed=True, color=(0, 0, 255), thickness=2)
     cv2.addWeighted(overlay, 0.2, img, 0.8, 0, img)
-    cv2.imwrite(out_fname,img,[cv2.IMWRITE_JPEG_QUALITY, 90])    
+    cv2.imwrite(out_fname,img,[cv2.IMWRITE_JPEG_QUALITY, 90])
+
+def write_debug_corner_img(img,keypoint_new_coords,out_fname):
+    overlay = img.copy()
+    cv2.drawMarker(overlay, keypoint_new_coords, color=(255, 0, 0), markerType=cv2.MARKER_CROSS,
+                markerSize=20, thickness=2, line_type=cv2.LINE_AA)
+    cv2.imwrite(out_fname,overlay,[cv2.IMWRITE_JPEG_QUALITY, 90])
 
     
 def gather_images(img_source_dir):
