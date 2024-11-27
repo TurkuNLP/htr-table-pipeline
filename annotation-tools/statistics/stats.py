@@ -8,6 +8,7 @@ import zipfile
 from collections import Counter
 import xml.etree.ElementTree as ET
 
+namespace = {'ns': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
 
 def yield_images(file_catalogy):
     wb = openpyxl.load_workbook(file_catalogy)
@@ -53,27 +54,54 @@ def yield_images(file_catalogy):
             #print(file_path, layout_type)
             yield file_path, layout_type
 
-# Function, that reads local files that have been cloned from htr-annotations GitHub repository.
+# Function, that reads local files that have been cloned from htr-annotations GitHub repository.        
 def read_local_files(directory):
     local_files = []
     cell_annotated_local_files = []
+    total_text_lines = 0
+    total_unclear_lines = 0
+
+
     for root, dirs, files in os.walk(directory):
         for file in files:
-            if file.lower().endswith(".xml"):  
-                local_files.append(os.path.basename(file))
+            if file.lower().endswith(".xml"):
+                if file.lower().startswith("mands-"):
+                    excel_name = os.path.basename(file).removeprefix("mands-")
+                    local_files.append(excel_name)
+                else:
+                    local_files.append(os.path.basename(file))
+
                 file_path = os.path.join(root, file)
+
+            
                 tree = ET.parse(file_path)
                 root_element = tree.getroot()
+            
+                # this is for finding the textlines in the xml-files
+                for element in root_element.iter():
+                    text_line = element.attrib.get('custom', '')
+                    if "readingOrder" in text_line:
+                        unicode_elem = element.find('.//ns:Unicode', namespace)
+                        if unicode_elem is not None and unicode_elem.text:
+                            if "?" in {unicode_elem.text.strip()}:
+                                total_unclear_lines += 1
+                            else:
+                                total_text_lines += 1
+                        else:
+                            continue
+
+                # checks if the xml-files have been cell-annotated
                 for element in root_element.iter():
                     custom_attrib = element.attrib.get('custom', '')
-                    # Tarkistetaan sisältääkö 'custom' merkkijonon 'structure'
                     if "structure" in custom_attrib:
-                        cell_annotated_local_files.append(os.path.basename(file))  # Append files with custom="structure"
-                        break  
-                #file_path = os.path.join(root, file)
-    #print(local_files)
-    return local_files, cell_annotated_local_files
-    
+                        if file.lower().startswith("mands-"):
+                            excel_name = os.path.basename(file).removeprefix("mands-")
+                            cell_annotated_local_files.append(excel_name)
+                        else:
+                            cell_annotated_local_files.append(os.path.basename(file))
+                        break
+
+    return local_files, cell_annotated_local_files, total_text_lines, total_unclear_lines
 
 def main(args):
     images = list(yield_images(args.file_catalogy))  
@@ -94,9 +122,9 @@ def main(args):
     print(f"Total free text in Excel: {total_free_text_in_excel} ({round((total_free_text_in_excel / total_images_in_excel) * 100, 2)}%)")
     print(f"Total other layout in Excel: {total_other_layout_in_excel} ({round((total_other_layout_in_excel / total_images_in_excel) * 100, 2)}%)")
 
-    local_files, cell_annotated_local_files = read_local_files(args.local_directory)
-    annotated_local_files = [file_path for file_path, layout in images if file_path in local_files]
-    cell_annotated_local_files = [file_path for file_path, layout in images if file_path in cell_annotated_local_files]
+    local_files, cell_annotated_local_files, total_text_lines, total_unclear_lines = read_local_files(args.local_directory) 
+    annotated_local_files = [file_path for file_path, layout in images if file_path in local_files] # muoattu tästä: [file_path for file_path, layout in images if file_path in local_files]
+    cell_annotated_local_files = [file_path for file_path, layout in images if file_path in cell_annotated_local_files] # muokattu tästä: [file_path for file_path, layout in images if file_path in cell_annotated_local_files]
     total_annotated_files = len(annotated_local_files)
     total_cell_annotated_files = len(cell_annotated_local_files)
 
@@ -127,6 +155,10 @@ def main(args):
     print(f"Total cell annotated halfbook: {total_cell_annotated_halfbook} ({round((total_cell_annotated_halfbook / total_cell_annotated_files) * 100, 2)}%)")
     print(f"Total cell annotated free text: {total_cell_annotated_free_text} ({round((total_cell_annotated_free_text / total_cell_annotated_files) * 100, 2)}%)")
     print(f"Total cell annotated other: {total_cell_annotated_other} ({round((total_cell_annotated_other / total_cell_annotated_files) * 100, 2)}%)")
+
+    print(f"Total annotated text lines: {total_text_lines}")
+    print(f"Unclear annotated text lines (with '?'): {total_unclear_lines}")
+    print(f"Percentage unclear: {round((total_unclear_lines / total_text_lines) * 100, 2)}%" if total_text_lines > 0 else "N/A")
 
     if args.verbose:  
         print("\n### Layout Statistics for Entire Excel ###")
