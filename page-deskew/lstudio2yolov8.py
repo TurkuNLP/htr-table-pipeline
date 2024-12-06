@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 class KPoints:
 
     def __init__(self, tl, tm, tr, bl, bm, br, img_path=None):
+        #these are relative 0-100
         self.tl = tl
         self.tm = tm
         self.tr = tr
@@ -25,21 +26,33 @@ class KPoints:
         self.w,self.h=None,None
         self.skew_reskew_meta=None
 
+    def update_int_coords(self):
+        #compute absolute coordinates based on the float ones
+        def calculate_int_coordinates(point):
+            return (int(self.w * point[0] / 100), int(self.h * point[1] / 100))
+        self.tl_int = calculate_int_coordinates(self.tl)
+        self.tm_int = calculate_int_coordinates(self.tm)
+        self.tr_int = calculate_int_coordinates(self.tr)
+        self.bl_int = calculate_int_coordinates(self.bl)
+        self.bm_int = calculate_int_coordinates(self.bm)
+        self.br_int = calculate_int_coordinates(self.br)
+    
+    def update_relative_coords(self):
+        #compute relative coordinates based on the int ones
+        def calculate_rel_coordinates(point):
+            return (point[0] * 100 / self.w, point[1] * 100 / self.h)
+        self.tl = calculate_rel_coordinates(self.tl_int)
+        self.tm = calculate_rel_coordinates(self.tm_int)
+        self.tr = calculate_rel_coordinates(self.tr_int)
+        self.bl = calculate_rel_coordinates(self.bl_int)
+        self.bm = calculate_rel_coordinates(self.bm_int)
+        self.br = calculate_rel_coordinates(self.br_int)
+
     def possibly_read_image(self):
         if self.image is None and self.img_path:
             self.image = cv2.imread(self.img_path)
             self.w,self.h=self.image.shape[1],self.image.shape[0]
-
-            def calculate_int_coordinates(point):
-                return (int(self.w * point[0] / 100), int(self.h * point[1] / 100))
-
-            self.tl_int = calculate_int_coordinates(self.tl)
-            self.tm_int = calculate_int_coordinates(self.tm)
-            self.tr_int = calculate_int_coordinates(self.tr)
-            self.bl_int = calculate_int_coordinates(self.bl)
-            self.bm_int = calculate_int_coordinates(self.bm)
-            self.br_int = calculate_int_coordinates(self.br)
-
+            self.update_int_coords()
 
     def extract_zoomed_corners(self,fuzz=0.05,corner_size=0.25,flip=False):
         """Extract the zoomed corners, with a bit of fuzz, these are given as percentages (0,1)
@@ -49,15 +62,18 @@ class KPoints:
         self.possibly_read_image()
         int_fuzz = int(self.w * fuzz)
         int_corner_size = int(self.w * corner_size)
-        for point,flipH,flipV in [(self.tl_int,False,False),(self.tm_int,False,False),(self.tr_int,True,False),(self.bl_int,False,True),(self.bm_int,False,True),(self.br_int,True,True)]:
+        for point,flipH,flipV,point_type in [(self.tl_int,False,False,"tl"),(self.tm_int,False,False,"tm"),(self.tr_int,True,False,"tr"),(self.bl_int,False,True,"bl"),(self.bm_int,False,True,"bm"),(self.br_int,True,True,"br")]:
             #Pretend the point is randomly up to int_fuzz off
             #So this is the center of the corner area
-            center_point = np.array([point[0] + np.random.randint(-int_fuzz, int_fuzz), point[1] + np.random.randint(-int_fuzz, int_fuzz)]).flatten().tolist()
+            if fuzz>0:
+                center_point = np.array([point[0] + np.random.randint(-int_fuzz, int_fuzz), point[1] + np.random.randint(-int_fuzz, int_fuzz)]).flatten().tolist()
+            else:
+                center_point=point
             patch, keypoint_new_coords, _ = crop_patch(self.image, center_point, point, (int_corner_size, int_corner_size))
             if flip:
                 patch,flipped_points=self.flip(patch,[keypoint_new_coords],flipH,flipV)
                 keypoint_new_coords=flipped_points[0]
-            zoomed_corners.append((patch, center_point, keypoint_new_coords,flipH,flipV))
+            zoomed_corners.append((patch, center_point, keypoint_new_coords,flipH,flipV,point_type))
         return zoomed_corners
 
     def flip(self,img,points,flipH,flipV):
@@ -414,17 +430,20 @@ def to_yolo(inp_files,section,img_basename2path,xml_basename2path,skew_rskew_met
                 
                 #4) make stage2 images on the corners
                 zoomed_corners=kpoints.extract_zoomed_corners(fuzz=0.05,corner_size=0.15,flip=True)
-                for idx,(patch,center_point,keypoint_new_coords,flipH,flipV) in enumerate(zoomed_corners):
+                for idx,(patch,center_point,keypoint_new_coords,flipH,flipV,point_type) in enumerate(zoomed_corners):
                     patch_width,patch_height=patch.shape[1],patch.shape[0]
                     #Let's make sure the Yolo region is square no matter what the patch size comes out to be
                     if patch_width>=patch_height:
                         w,h=0.2*patch_height/patch_width,0.2
                     else:
                         w,h=0.2,0.2*patch_width/patch_height
-
+                    if point_type in ["tm","bm"]:
+                        cls="1"
+                    else:
+                        cls="0"
                     cv2.imwrite(f"{args.dataset_stg2_corners_out_dir}/{section}/images/{basename.replace('.jpg','')}_{idx}.jpg",patch,[cv2.IMWRITE_JPEG_QUALITY, 90])
                     with open(f"{args.dataset_stg2_corners_out_dir}/{section}/labels/{basename.replace('.jpg','')}_{idx}.txt","wt") as lab_file:
-                        print("0", end=" ", file=lab_file)
+                        print(cls, end=" ", file=lab_file)
                         print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height} {w} {h}", end=" ", file=lab_file)
                         print(f"{keypoint_new_coords[0]/patch_width} {keypoint_new_coords[1]/patch_height}", end=" ", file=lab_file)
                         print("", file=lab_file)
