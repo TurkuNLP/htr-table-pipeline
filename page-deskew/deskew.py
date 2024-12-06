@@ -7,6 +7,7 @@ import lstudio2yolov8
 from ultralytics import YOLO
 import more_itertools
 import sys
+import glob
 
 # Runs the deskew process
 
@@ -19,11 +20,11 @@ def yield_images_from_zip(zip_path):
                     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                     yield file_name,image
 
-def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model):
+def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model,args):
     images=[img for file_name,img in batch]
     ds_images=[]
     stg2_batch=[]
-    yolo_results=yolo_stg1_pose_model.predict(images,conf=0.25) #this does batched inference, since we give a list on the input
+    yolo_results=yolo_stg1_pose_model.predict(images,conf=0.25,device=args.device) #this does batched inference, since we give a list on the input
     bypass=[] #images that we skip from the stg2 batch
     for (id,((file_name,img),yolo_result)) in enumerate(zip(batch,list(yolo_results))):
         _,kpoint_num,xy=yolo_result.keypoints.xy.shape
@@ -38,7 +39,7 @@ def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model):
             print(f"Skipping {file_name} as it has {kpoint_num} keypoints",file=sys.stderr,flush=True)
             bypass.append(id)
     if stg2_batch:
-        debug_coordinates=stg2_update_keypoints(stg2_batch,yolo_stg2_pose_model) #updates keypoints in-place
+        debug_coordinates=stg2_update_keypoints(stg2_batch,yolo_stg2_pose_model,args) #updates keypoints in-place
     else:
         debug_coordinates=[]
     assert len(stg2_batch)==len(debug_coordinates)
@@ -60,7 +61,7 @@ def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model):
     return list(sorted(ds_images))
 
 
-def stg2_update_keypoints(batch,yolo_stg2_pose_model):
+def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
     stg2_batch_images=[]
     #batch of figures
     all_zoomed_corners=[]
@@ -70,7 +71,7 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model):
         for (patch,center_point,keypoint_new_coords,flipH,flipV,point_type) in zoomed_corners:
             stg2_batch_images.append(patch)
     #this will now be batch times 6 predictions
-    yolo_results=yolo_stg2_pose_model.predict(stg2_batch_images,max_det=1,conf=0.25)
+    yolo_results=yolo_stg2_pose_model.predict(stg2_batch_images,max_det=1,conf=0.25,device=args.device)
     debug_output=[]
     for (id,kpoints),point_predictions_x6,corner_info_x6 in zip(batch,more_itertools.chunked(yolo_results,6),all_zoomed_corners): #there should be 6 predictions per image
         debug_output.append((id,[]))
@@ -109,48 +110,64 @@ def deskew(args):
     
     # Create output directory if it doesn't exist
     os.makedirs(args.directory_out, exist_ok=True)
-    zip_out_path = os.path.join(args.directory_out, "autods_"+os.path.basename(args.zipfile_in))
     if args.debug_directory_out is not None:
         os.makedirs(args.debug_directory_out, exist_ok=True)
-        zip_debug_path = os.path.join(args.debug_directory_out, "debug_"+os.path.basename(args.zipfile_in))
     
-    with zipfile.ZipFile(zip_out_path, 'w') as zip_out,\
-        (zipfile.ZipFile(zip_debug_path, 'w') if args.debug_directory_out is not None else None) as zip_debug:
-        img_zipfile_generator=more_itertools.ichunked(yield_images_from_zip(args.zipfile_in),args.batchsize)
-        for batch in img_zipfile_generator:
-            deskewed=stg1_keypoints(list(batch),stg1_model,stg2_model)
-            for id,file_name,img,img_debug,debug_coord_list in deskewed:
-                _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                file_name_parts = os.path.split(file_name)
-                new_file_name = os.path.join(file_name_parts[0], "autods_" + file_name_parts[1])
-                zip_out.writestr(new_file_name, buffer.tobytes())                
-                if zip_debug is not None:
-                    _, buffer = cv2.imencode('.jpg', img_debug, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                    debug_file_name = os.path.join(file_name_parts[0], "debug_" + file_name_parts[1])
-                    zip_debug.writestr(debug_file_name, buffer.tobytes())
-                    debug_file_name_txt = os.path.join(file_name_parts[0], "coords_" + file_name_parts[1].replace(".jpg", ".txt"))
-                    debug_coords_str="#DBG tl_old tl_new tm_old tm_new tr_old tr_new br_old br_new bm_old bm_new bl_old bl_new\nDBG"
-                    for old_coords, new_coords in debug_coord_list:
-                        debug_coords_str+=" "
-                        if old_coords is not None:
-                            debug_coords_str+=f"{old_coords[0]},{old_coords[1]}"
-                        else:
-                            debug_coords_str+="None,None"
-                        debug_coords_str+=" "
-                        if new_coords is not None:
-                            debug_coords_str+=f"{new_coords[0]},{new_coords[1]}"
-                        else:
-                            debug_coords_str+="None,None"
-                    zip_debug.writestr(debug_file_name_txt, debug_coords_str.encode("utf-8"))
+    if args.zipfiles_in:
+        all_zips=args.zipfiles_in
+    elif args.zipfile_glob:
+        all_zips=glob.glob(args.zipfile_glob)
+    else:
+        all_zips=[]
+    if not all_zips:
+        print("No zipfiles to process",file=sys.stderr,flush=True)
+        return  #nothing to do
+
+    for counter,zipfile_in in enumerate(all_zips):
+        print(f"Processing {zipfile_in} {counter+1}/{len(all_zips)}",file=sys.stderr,flush=True)
+        zip_out_path = os.path.join(args.directory_out, "autods_"+os.path.basename(zipfile_in))
+        if args.debug_directory_out is not None:
+            zip_debug_path = os.path.join(args.debug_directory_out, "debug_"+os.path.basename(zipfile_in))
+        
+        with zipfile.ZipFile(zip_out_path, 'w') as zip_out,\
+            (zipfile.ZipFile(zip_debug_path, 'w') if args.debug_directory_out is not None else None) as zip_debug:
+            img_zipfile_generator=more_itertools.ichunked(yield_images_from_zip(zipfile_in),args.batchsize)
+            for batch in img_zipfile_generator:
+                deskewed=stg1_keypoints(list(batch),stg1_model,stg2_model,args)
+                for id,file_name,img,img_debug,debug_coord_list in deskewed:
+                    _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    file_name_parts = os.path.split(file_name)
+                    new_file_name = os.path.join(file_name_parts[0], "autods_" + file_name_parts[1])
+                    zip_out.writestr(new_file_name, buffer.tobytes())                
+                    if zip_debug is not None:
+                        _, buffer = cv2.imencode('.jpg', img_debug, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                        debug_file_name = os.path.join(file_name_parts[0], "debug_" + file_name_parts[1])
+                        zip_debug.writestr(debug_file_name, buffer.tobytes())
+                        debug_file_name_txt = os.path.join(file_name_parts[0], "coords_" + file_name_parts[1].replace(".jpg", ".txt"))
+                        debug_coords_str="#DBG tl_old tl_new tm_old tm_new tr_old tr_new br_old br_new bm_old bm_new bl_old bl_new\nDBG"
+                        for old_coords, new_coords in debug_coord_list:
+                            debug_coords_str+=" "
+                            if old_coords is not None:
+                                debug_coords_str+=f"{old_coords[0]},{old_coords[1]}"
+                            else:
+                                debug_coords_str+="None,None"
+                            debug_coords_str+=" "
+                            if new_coords is not None:
+                                debug_coords_str+=f"{new_coords[0]},{new_coords[1]}"
+                            else:
+                                debug_coords_str+="None,None"
+                        zip_debug.writestr(debug_file_name_txt, debug_coords_str.encode("utf-8"))
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Deskew images from a zip file.')
     parser.add_argument('--stage1-model', type=str, required=True, help='Path to the stage 1 YOLO model.')
     parser.add_argument('--stage2-model', type=str, default=None, help='Path to the stage 2 YOLO model.')
-    parser.add_argument('--zipfile-in', type=str, required=True, help='Path to the input zip file.')
+    parser.add_argument('--zipfiles-in', nargs="+", default=[], type=str, help='Path to the input zip file(s).')
+    parser.add_argument('--zipfile-glob', type=str, default=None, help='if set and zipfiles-in is empty, will glob for zip files')
     parser.add_argument('--directory-out', type=str, default="out", help='Path to the output directory.')
     parser.add_argument('--debug-directory-out', type=str, default=None, help='Path to the output directory for debug files.')
     parser.add_argument('--batchsize', type=int, default=2, help='Batch size for processing images.')
+    parser.add_argument('--device', type=str, default="cpu", help='Device to run the model on. cpu, cuda:0, cuda:1, etc.')
     return parser.parse_args()
 
 if __name__ == '__main__':
