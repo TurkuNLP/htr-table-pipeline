@@ -8,17 +8,18 @@ from ultralytics import YOLO
 import more_itertools
 import sys
 import glob
+import traceback
 
 # Runs the deskew process
 
 def yield_images_from_zip(zip_path):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        for file_name in zip_ref.namelist():
-            if file_name.endswith('.jpg'):
-                with zip_ref.open(file_name) as file:
+        for zinfo in zip_ref.infolist():
+            if zinfo.filename.endswith('.jpg'):
+                with zip_ref.open(zinfo) as file:
                     file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
                     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                    yield file_name,image
+                    yield zinfo.filename,image
 
 def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model,args):
     images=[img for file_name,img in batch]
@@ -82,7 +83,7 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
                 #didn't find any keypoint, let's skip this one
                 debug_output[-1][-1].append((old_coords,None))
                 continue
-            delta=point_prediction.keypoints.xy[0][0].numpy()-np.array(keypoint_new_coords,int)
+            delta=point_prediction.keypoints.xy[0][0].cpu().numpy()-np.array(keypoint_new_coords,int)
             if flipH:
                 delta[0]*=-1
             if flipV:
@@ -116,7 +117,7 @@ def deskew(args):
     if args.zipfiles_in:
         all_zips=args.zipfiles_in
     elif args.zipfile_glob:
-        all_zips=glob.glob(args.zipfile_glob)
+        all_zips=list(sorted(glob.glob(args.zipfile_glob)))
     else:
         all_zips=[]
     if not all_zips:
@@ -125,38 +126,42 @@ def deskew(args):
 
     for counter,zipfile_in in enumerate(all_zips):
         print(f"Processing {zipfile_in} {counter+1}/{len(all_zips)}",file=sys.stderr,flush=True)
-        zip_out_path = os.path.join(args.directory_out, "autods_"+os.path.basename(zipfile_in))
-        if args.debug_directory_out is not None:
-            zip_debug_path = os.path.join(args.debug_directory_out, "debug_"+os.path.basename(zipfile_in))
-        
-        with zipfile.ZipFile(zip_out_path, 'w') as zip_out,\
-            (zipfile.ZipFile(zip_debug_path, 'w') if args.debug_directory_out is not None else None) as zip_debug:
-            img_zipfile_generator=more_itertools.ichunked(yield_images_from_zip(zipfile_in),args.batchsize)
-            for batch in img_zipfile_generator:
-                deskewed=stg1_keypoints(list(batch),stg1_model,stg2_model,args)
-                for id,file_name,img,img_debug,debug_coord_list in deskewed:
-                    _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                    file_name_parts = os.path.split(file_name)
-                    new_file_name = os.path.join(file_name_parts[0], "autods_" + file_name_parts[1])
-                    zip_out.writestr(new_file_name, buffer.tobytes())                
-                    if zip_debug is not None:
-                        _, buffer = cv2.imencode('.jpg', img_debug, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                        debug_file_name = os.path.join(file_name_parts[0], "debug_" + file_name_parts[1])
-                        zip_debug.writestr(debug_file_name, buffer.tobytes())
-                        debug_file_name_txt = os.path.join(file_name_parts[0], "coords_" + file_name_parts[1].replace(".jpg", ".txt"))
-                        debug_coords_str="#DBG tl_old tl_new tm_old tm_new tr_old tr_new br_old br_new bm_old bm_new bl_old bl_new\nDBG"
-                        for old_coords, new_coords in debug_coord_list:
-                            debug_coords_str+=" "
-                            if old_coords is not None:
-                                debug_coords_str+=f"{old_coords[0]},{old_coords[1]}"
-                            else:
-                                debug_coords_str+="None,None"
-                            debug_coords_str+=" "
-                            if new_coords is not None:
-                                debug_coords_str+=f"{new_coords[0]},{new_coords[1]}"
-                            else:
-                                debug_coords_str+="None,None"
-                        zip_debug.writestr(debug_file_name_txt, debug_coords_str.encode("utf-8"))
+        try:
+            zip_out_path = os.path.join(args.directory_out, "autods_"+os.path.basename(zipfile_in))
+            if args.debug_directory_out is not None:
+                zip_debug_path = os.path.join(args.debug_directory_out, "debug_"+os.path.basename(zipfile_in))
+
+            with zipfile.ZipFile(zip_out_path, 'w') as zip_out,\
+                (zipfile.ZipFile(zip_debug_path, 'w') if args.debug_directory_out is not None else None) as zip_debug:
+                img_zipfile_generator=more_itertools.ichunked(yield_images_from_zip(zipfile_in),args.batchsize)
+                for batch in img_zipfile_generator:
+                    deskewed=stg1_keypoints(list(batch),stg1_model,stg2_model,args)
+                    for id,file_name,img,img_debug,debug_coord_list in deskewed:
+                        _, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                        file_name_parts = os.path.split(file_name)
+                        new_file_name = os.path.join(file_name_parts[0], "autods_" + file_name_parts[1])
+                        zip_out.writestr(new_file_name, buffer.tobytes())                
+                        if zip_debug is not None:
+                            _, buffer = cv2.imencode('.jpg', img_debug, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                            debug_file_name = os.path.join(file_name_parts[0], "debug_" + file_name_parts[1])
+                            zip_debug.writestr(debug_file_name, buffer.tobytes())
+                            debug_file_name_txt = os.path.join(file_name_parts[0], "coords_" + file_name_parts[1].replace(".jpg", ".txt"))
+                            debug_coords_str="#DBG tl_old tl_new tm_old tm_new tr_old tr_new br_old br_new bm_old bm_new bl_old bl_new\nDBG"
+                            for old_coords, new_coords in debug_coord_list:
+                                debug_coords_str+=" "
+                                if old_coords is not None:
+                                    debug_coords_str+=f"{old_coords[0]},{old_coords[1]}"
+                                else:
+                                    debug_coords_str+="None,None"
+                                debug_coords_str+=" "
+                                if new_coords is not None:
+                                    debug_coords_str+=f"{new_coords[0]},{new_coords[1]}"
+                                else:
+                                    debug_coords_str+="None,None"
+                            zip_debug.writestr(debug_file_name_txt, debug_coords_str.encode("utf-8"))
+        except:
+            print(f"FAILED {zipfile_in}",file=sys.stderr,flush=True)
+            traceback.print_exc()
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Deskew images from a zip file.')
