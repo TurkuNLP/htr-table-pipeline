@@ -247,6 +247,10 @@ class KPoints:
         return line
 
 
+def vertical_line_angle(p_top,p_bottom):
+    return math.degrees(math.atan2(p_bottom[1]-p_top[1],p_bottom[0]-p_top[0]))-90
+
+
 def crop_patch(image,center,keypoint,patchsize):
     """
     image

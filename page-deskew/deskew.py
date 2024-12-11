@@ -10,7 +10,13 @@ import sys
 import glob
 import traceback
 
-# Runs the deskew process
+#gathered from training data with python3 estimate_vangle.py ../../htr-annotations/deskew-keypoints/train_part*.json
+angle_limit_data={'l': {'mean': 0.24755304277022264, 'stdev': 0.5850729424142381, 'min': -1.9078686234196738, 'max': 2.339893671562592}, 
+                  'm': {'mean': -0.033317493513659334, 'stdev': 0.4102483258697504, 'min': -1.8664903884855306, 'max': 2.187532011056419}, 
+                  'r': {'mean': -0.17899178022242473, 'stdev': 0.6119567565473318, 'min': -3.2559467759417657, 'max': 1.7164697009402943}}
+for k in angle_limit_data:
+    angle_limit_data[k]["min"]*=2 #loosen it up a bit
+    angle_limit_data[k]["max"]*=2
 
 def yield_images_from_zip(zip_path):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -50,10 +56,10 @@ def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model,args):
         debug_img = kp.image.copy()
         for (old_coords, new_coords) in coord_list:
             if old_coords is not None:
-                cv2.circle(debug_img, tuple(old_coords), 20, (0, 0, 255), 2)
-                cv2.circle(debug_img, tuple(old_coords), 2, (0, 0, 255), -1)
+                cv2.circle(debug_img, tuple(old_coords), 40, (0, 0, 255), 4)
+                cv2.circle(debug_img, tuple(old_coords), 5, (0, 0, 255), -1)
             if new_coords is not None:
-                cv2.drawMarker(debug_img, tuple(new_coords), (0, 255, 0), markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
+                cv2.drawMarker(debug_img, tuple(new_coords), (0, 255, 0), markerType=cv2.MARKER_CROSS, markerSize=40, thickness=5)
         ds_images.append((id1,kp.file_name, dimg, debug_img, coord_list))
     for id,(file_name,img) in enumerate(batch):
         if id in bypass:
@@ -61,6 +67,18 @@ def stg1_keypoints(batch,yolo_stg1_pose_model,yolo_stg2_pose_model,args):
     assert len(ds_images)==len(batch)
     return list(sorted(ds_images))
 
+def highest_prediction_index(yolo_result,point_type):
+    #Takes a yolo result with possibly many predictions and returns the index of the highest confidence prediction of the correct class
+    if point_type in ("tm","bm"):
+        cls="midpoint"
+    else:
+        cls="corner"
+    #which class id does this correspond to?
+    class_id=0 if yolo_result.names[0]==cls else 1 #ok this is dirty, but it works for 2 classes like we have
+    for idx,pred_cls in enumerate(yolo_result.boxes.cls):
+        if int(pred_cls)==class_id:
+            return idx
+    return None
 
 def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
     stg2_batch_images=[]
@@ -72,7 +90,7 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
         for (patch,center_point,keypoint_new_coords,flipH,flipV,point_type) in zoomed_corners:
             stg2_batch_images.append(patch)
     #this will now be batch times 6 predictions
-    yolo_results=yolo_stg2_pose_model.predict(stg2_batch_images,max_det=1,conf=0.25,device=args.device)
+    yolo_results=yolo_stg2_pose_model.predict(stg2_batch_images,max_det=5,conf=0.2,device=args.device)
     debug_output=[]
     for (id,kpoints),point_predictions_x6,corner_info_x6 in zip(batch,more_itertools.chunked(yolo_results,6),all_zoomed_corners): #there should be 6 predictions per image
         debug_output.append((id,[]))
@@ -83,7 +101,11 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
                 #didn't find any keypoint, let's skip this one
                 debug_output[-1][-1].append((old_coords,None))
                 continue
-            delta=point_prediction.keypoints.xy[0][0].cpu().numpy()-np.array(keypoint_new_coords,int)
+            highest_idx=highest_prediction_index(point_prediction,point_type)
+            if highest_idx is None:
+                debug_output[-1][-1].append((old_coords,None))
+                continue
+            delta=point_prediction.keypoints.xy[0][highest_idx].cpu().numpy()-np.array(keypoint_new_coords,int)
             if flipH:
                 delta[0]*=-1
             if flipV:
@@ -92,7 +114,19 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
             debug_output[-1][-1].append((old_coords,new_coords))
             #print("old_coords",old_coords,old_coords.__class__)
             #print("delta",delta)
-            setattr(kpoints, point_type+"_int", new_coords.tolist())
+            #Basically, we should only accept the correction if the corrected angle falls within the limits
+            tb,lmr=point_type[0],point_type[1] #top/bottom, left/mid/right
+            if tb=="t":
+                top=new_coords.tolist()
+                bottom=getattr(kpoints, "b"+lmr+"_int")
+            else:
+                bottom=new_coords.tolist()
+                top=getattr(kpoints, "t"+lmr+"_int")
+            angle=lstudio2yolov8.vertical_line_angle(top,bottom)
+            if angle<angle_limit_data[lmr]["min"] or angle>angle_limit_data[lmr]["max"]:
+                print(f"Angle {angle} for {point_type} is out of range {angle_limit_data[lmr]}",file=sys.stderr,flush=True)
+            else:
+                setattr(kpoints, point_type+"_int", new_coords.tolist())
             #print(f"point_type={point_type} delta={delta}")
         kpoints.update_relative_coords() #should run this since we touched
 
