@@ -75,6 +75,8 @@ def highest_prediction_index(yolo_result,point_type):
         cls="corner"
     #which class id does this correspond to?
     class_id=0 if yolo_result.names[0]==cls else 1 #ok this is dirty, but it works for 2 classes like we have
+    #print(yolo_result.boxes.cls)
+    #print(yolo_result.boxes.conf)
     for idx,pred_cls in enumerate(yolo_result.boxes.cls):
         if int(pred_cls)==class_id:
             return idx
@@ -105,7 +107,8 @@ def stg2_update_keypoints(batch,yolo_stg2_pose_model,args):
             if highest_idx is None:
                 debug_output[-1][-1].append((old_coords,None))
                 continue
-            delta=point_prediction.keypoints.xy[0][highest_idx].cpu().numpy()-np.array(keypoint_new_coords,int)
+            delta=point_prediction.keypoints.xy[highest_idx][0].cpu().numpy()-np.array(keypoint_new_coords,int)
+            #print("xy shape",point_prediction.keypoints.xy.shape)
             if flipH:
                 delta[0]*=-1
             if flipV:
