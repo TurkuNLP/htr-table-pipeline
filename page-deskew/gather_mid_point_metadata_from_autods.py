@@ -46,6 +46,10 @@ class DeskewData:
         self.bl_new=get_point(self.bl_old, bl_new)
 
     def get_mid_vertical_x(self):
+        if self.tm_new is None or self.tl_new is None:
+            return 0.0
+        if self.tr_new is None or self.tm_new is None:
+            return 1.0
         left=(self.tm_new[0]-self.tl_new[0])
         right=(self.tr_new[0]-self.tm_new[0])
         return left/(left+right)
