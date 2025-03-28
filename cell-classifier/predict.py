@@ -28,12 +28,11 @@ def predict(args):
     #model = YOLO('yolov8n-cls.pt')
     model = YOLO(args.model) # load a pretrained model (recommended for training)
 
-    # predict
-    results = model.predict(files, batch=12, stream=True)
-    #results = model.predict(files, batch=12)
-    print(results)
+    # predict one file at a time, not very efficient!!!! (TODO)
     pred_labels = []
-    for r in results:
+    for fname, label in data:
+        results = model.predict(fname)
+        r = results[0]
         max_index = torch.argmax(r.probs.data).item()
         label = r.names[max_index]
         score = r.probs.data[max_index].item()
@@ -54,10 +53,7 @@ def predict(args):
     #plt.show()
     # save the plot as png
     plt.savefig("confusion_matrix.png")
-    
 
-
- 
 
 
 
@@ -69,4 +65,4 @@ if __name__ == "__main__":
 
     predict(args)
     
-    # Usage: python predict.py --data-dir yolo-data --model trained-yolo-model.pt
+    # Usage: python predict.py --data-dir yolo-data/val --model trained-yolo-model.pt

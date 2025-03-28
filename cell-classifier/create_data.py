@@ -6,6 +6,7 @@ import os
 import json
 import zipfile
 import numpy as np
+from tqdm import tqdm
 
 ## LABEL METADATA
 cell_labels = {"structure {type:line;}": "line", "structure {type:multi-line;}": "multi-line", "structure {type:same-as;}": "same-as", "structure {type:empty;}": "empty", "structure {type:misc;}": "misc"}
@@ -56,15 +57,13 @@ Example XML file:
 
 """
 
-def read_zip(zip_fname):
-    # read zip file and extract all image names and their path
-    # create a dictionary where key is basename, and value is full name with path so that we can get the correct image easily using its basename
+
+def read_images(data_dir):
     d = {}
-    with zipfile.ZipFile(zip_fname, 'r') as zip_file:
-        for fname in zip_file.namelist():
-            basename = os.path.basename(fname)
-            d[basename] = fname
-    print(f"{len(d)} images read from the zip file.")
+    files = glob.glob(os.path.join(data_dir, "**/*.jpg"), recursive=True)
+    for file in files:
+        d[os.path.basename(file)] = file
+    print(f"{len(d)} images read from the directory.")
     return d
 
 
@@ -118,8 +117,8 @@ def yield_annotated_cells(fname):
 
             for cell in table.findall('.//ns:TableCell', namespace):
                 cell_annotation = cell.attrib.get("custom", None)
-                if cell_annotation is None: # if no annotation, assume this is single line text cell
-                    cell_label = "line"
+                if cell_annotation is None: 
+                    continue
                 else:
                     assert cell_annotation in cell_labels
                     cell_label = cell_labels[cell_annotation]
@@ -170,16 +169,13 @@ def process_image(img, context_type, cell_coord_points):
     else:
         raise NotImplementedError(f"Context type {context_type} not implemented.")
 
-def process_dataset(input_xml, image_zip_fname, ds_image_zip_fname, output_dir, context_type):
+def process_dataset(input_data, output_dir, context_type):
     global cell_labels
 
-    annotated_files = glob.glob(os.path.join(input_xml, "**/*.xml"), recursive=True)
+    annotated_files = glob.glob(os.path.join(input_data, "**/*.xml"), recursive=True)
     annotated_files.sort()
 
-    zip_dict = read_zip(image_zip_fname)
-    ds_zip_dict = read_zip(ds_image_zip_fname)
-    zip_file = zipfile.ZipFile(image_zip_fname, 'r')
-    ds_zip_file = zipfile.ZipFile(ds_image_zip_fname, 'r')
+    image_files = read_images(input_data)
 
     # intialize directories
     for label in cell_labels.values():
@@ -188,28 +184,19 @@ def process_dataset(input_xml, image_zip_fname, ds_image_zip_fname, output_dir, 
 
     cell_idx = 0
     total_files = 0
-    for fname in annotated_files:
+    for fname in tqdm(annotated_files):
 
-        # Ckeck if this file include cell annotations, if not, skip
-        if includes_cell_annotations(fname) == False:
-            continue
-        #print(fname)
         total_files += 1
 
         # load image here once, then just make copy of it
         image_basename = os.path.basename(fname).replace(".xml", ".jpg")
-        image_basename = image_basename.replace(".jpg.jpg", ".jpg") # fix error in the data
-        if image_basename in ds_zip_dict:
-            image_name = ds_zip_dict[image_basename]
-            image_data = ds_zip_file.read(image_name)
-            print(f"Found {fname} from deskewed images.")
-        else:
-            image_name = zip_dict[image_basename]
-            image_data = zip_file.read(image_name)
-            print(f"Found {fname} from original images.")
+        if image_basename not in image_files:
+            print("Image not found for", fname)
+            continue
+        #assert image_basename in image_files
+        image_name = image_files[image_basename]
 
-        orig_img = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)    
-
+        orig_img = cv2.imread(image_name)  
 
         for image_name_,  coord_points, label in yield_annotated_cells(fname):        
             
@@ -238,11 +225,20 @@ def process_dataset(input_xml, image_zip_fname, ds_image_zip_fname, output_dir, 
 
 def main(args):
 
+    if args.test_data_only:
+        process_dataset(args.test_data, os.path.join(args.output_dir, "test"), context_type=args.context_type)
+        print("Test data summary:")
+        for subdir in [d for d in os.scandir(os.path.join(args.output_dir, "test")) if d.is_dir()]:
+            num_files = len(glob.glob(os.path.join(args.output_dir, "test", subdir.name, "*.jpg")))
+            print(subdir.name, num_files)
+        exit(1)
+
+
     # create training data
-    process_dataset(args.train_xml, args.image_zip, args.ds_image_zip, os.path.join(args.output_dir, "train"), context_type=args.context_type)
+    process_dataset(args.train_data, os.path.join(args.output_dir, "train"), context_type=args.context_type)
 
     # create validation data
-    process_dataset(args.dev_xml, args.image_zip, args.ds_image_zip, os.path.join(args.output_dir, "val"), context_type=args.context_type)
+    process_dataset(args.dev_data, os.path.join(args.output_dir, "val"), context_type=args.context_type)
 
     # print summary
     print("Train data summary:")
@@ -259,21 +255,26 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train-xml", type=str, required=True, help="Path to training data (xml), will read all .xml files from the directory and its subdirectories.")
-    parser.add_argument("--dev-xml", type=str, required=True, help="Path to development data (xml), will read all .xml files from the directory and its subdirectories.")
-    parser.add_argument("--image-zip", type=str, required=True, help="Zip files with all downloaded images")
-    parser.add_argument("--ds-image-zip", type=str, required=True, help="Zip files with all ds images")
+    parser.add_argument("--train-data", type=str, required=True, help="Path to training data, will read all .xml and .jpg files from the directory and its subdirectories.")
+    parser.add_argument("--dev-data", type=str, required=True, help="Path to development data, will read all .xml and .jpg files from the directory and its subdirectories.")
     parser.add_argument("--context-type", type=str, default="cell", help="Type of context to extract (cell, column, nearby, full).")
     parser.add_argument("--output-dir", type=str, help="Output directory (e.g. yolo-data/train), will create separate directories for each label.")
+    parser.add_argument("--test-data-only", action="store_true", default=False, help="Create test data only. Will skip training data (give empty path as training-data and dev-data).")
+    parser.add_argument("--test-data", type=str, help="Path to test data, used only if test-data-only is set to True, otherwise ignored. Will read all .xml and .jpg files from the directory and its subdirectories.")
     args = parser.parse_args()
 
     if not os.path.isdir(args.output_dir):
         print("Output directory does not exist. Please create it first.")
         exit(1)
-    if not os.path.isdir(os.path.join(args.output_dir, "train")) or not os.path.isdir(os.path.join(args.output_dir, "val")):
+    if args.test_data_only==False and (os.path.isdir(os.path.join(args.output_dir, "train"))==False or os.path.isdir(os.path.join(args.output_dir, "val"))==False):
         print("Output directory should have subdirectories train and val.")
+        exit(1)
+    if args.test_data_only==True and os.path.isdir(os.path.join(args.output_dir, "test"))==False:
+        print("Output directory should have subdirectory test.")
         exit(1)
 
     main(args)
 
-    # Usage: python create_data.py --train-xml train/ --dev-xml dev/ ---image-zip moving_records_htr/images.zip  --output-dir yolo-data --context full
+
+    # Usage (train, dev): python create_data.py --train-data /scratch/project_2005072/moving_records_htr/training-set/ --dev-data /scratch/project_2005072/moving_records_htr/development-set/ --output-dir yolo-data-16122024 --context cell
+    # Usage (test): python create_data.py --train-data xxx --dev-data xxx --test-data /scratch/project_2005072/moving_records_htr/test-set/ --output-dir yolo-testdata-16122024  --context cell --test-data-only
