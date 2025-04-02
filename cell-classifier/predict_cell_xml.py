@@ -1,14 +1,8 @@
 from pathlib import Path
-from pprint import pprint
 import xml.etree.ElementTree as ET
-import glob
 import cv2
 from cv2.typing import MatLike
 import argparse
-import os
-import json
-import zipfile
-import numpy as np
 import torch
 from tqdm import tqdm
 from ultralytics import YOLO
@@ -41,15 +35,15 @@ def classify_images_and_create_xml(
     # For every jpg file, find the corresponding xml from pageText dir
     # Start using the logging module (?)
     if verbose:
-        print(f"Running cell classification on {len(jpg_paths)} images.")
+        print(f"Running cell classification on images in {data_dir_path}...")
         for jpg_path in tqdm(jpg_paths):
-            test(jpg_path, model)
+            process_image_classification(jpg_path, model)
     else:
         for jpg_path in jpg_paths:
-            test(jpg_path, model)
+            process_image_classification(jpg_path, model)
 
 
-def test(jpg_path: str, model: YOLO) -> None:
+def process_image_classification(jpg_path: str, model: YOLO) -> None:
     # Find the corresponding xml file in the pageText directory
     xml_path = (jpg_path.parent / "pageText" / jpg_path.name).with_suffix(".xml")
     if not xml_path.exists():
@@ -273,7 +267,7 @@ def write_classified_xml_output(
                 prev_custom: str = cell.get("custom", "")
                 cell.set(
                     "custom",
-                    f"{prev_custom + " " if prev_custom else ""}structure {{type:{cell_labels_dict[tuple(coord_points)]};}}",
+                    f'{prev_custom + " " if prev_custom else ""}structure {{type:{cell_labels_dict[tuple(coord_points)]};}}',
                 )
 
         # MODIFIES GLOBAL XML NAMESPACE REGISTRY! Can't find a way to do it locally.
