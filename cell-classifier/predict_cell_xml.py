@@ -17,7 +17,95 @@ from ultralytics import YOLO
 # Some of the code was extracted from create_data.py. Not imported as I wasn't sure what path the code would be run from.
 
 
+# Had problems with namespaces when writing XML files.
 namespace = {"ns": "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
+
+
+def classify_images_and_create_xml(
+    model_path: str, data_dir_path: str, verbose=True
+) -> None:
+    """
+    Finds all the jpg files in the data directory and its subdirectories,
+    and for each jpg file generates an updated XML file with the classified cells in `JPG PARENT DIR/pageTextClassified/`.
+    Uses XML file from `JPG PARENT DIR/pageText/` as the base.
+
+    :param model_path: path to the trained YOLO model
+    :param data_dir_path: path from which recursive jpg search is done
+    :param verbose: whether to print progress information
+    """
+    model = YOLO(model_path)
+
+    # Find all jpg files in the data directory and its subdirectories
+    jpg_paths = Path(data_dir_path).rglob("*.jpg")
+
+    # For every jpg file, find the corresponding xml from pageText dir
+    # Start using the logging module (?)
+    if verbose:
+        print(f"Running cell classification on {len(jpg_paths)} images.")
+        for jpg_path in tqdm(jpg_paths):
+            test(jpg_path, model)
+    else:
+        for jpg_path in jpg_paths:
+            test(jpg_path, model)
+
+
+def test(jpg_path: str, model: YOLO) -> None:
+    # Find the corresponding xml file in the pageText directory
+    xml_path = (jpg_path.parent / "pageText" / jpg_path.name).with_suffix(".xml")
+    if not xml_path.exists():
+        print(f"No corresponding XML file found in {xml_path}.")
+        return
+
+    # Create the output XML path
+    output_xml_path = (
+        jpg_path.parent / "pageTextClassified" / jpg_path.name
+    ).with_suffix(".xml")
+
+    # Ensure the output directory exists
+    output_xml_path.parent.mkdir(exist_ok=True)
+
+    # Classify cells and generate XML for each page
+    classify_cells_and_create_xml_for_page(jpg_path, xml_path, output_xml_path, model)
+
+
+def classify_cells_and_create_xml_for_page(
+    source_img_path: str,
+    source_xml_path: str,
+    output_xml_path: str,
+    model: YOLO,
+) -> None:
+    """
+    Classifies cells for one page image and writes an updated XML file with the classification labels to disk.
+
+    :param source_img_path: path to the source image file
+    :param source_xml_path: path to the source XML file with coordinates
+    :param output_xml_path: path to the output XML file
+    :param model: YOLO model to use for prediction
+    """
+    cell_data = yield_annotated_cells(source_xml_path)
+    image_names = []
+    cell_coords = []
+    for image_name, coords, text in cell_data:
+        image_names.append(image_name)
+        cell_coords.append(coords)
+
+    source_img = cv2.imread(source_img_path)
+    cell_imgs = extract_cell_imgs_from_img(source_img, cell_coords)
+
+    cell_batches = create_image_batches(cell_imgs, imgs_per_batch=50)
+
+    # Predict labels (e.g. multi-line, same-as) for each batch of cell images
+    pred_labels = []
+    for batch in cell_batches:
+        pred_labels += predict_cell_labels(model, batch)
+
+    # Create dict {coords: label} for each cell image
+    cell_labels_dict = {}
+    for i in range(len(cell_imgs)):
+        cell_labels_dict[tuple(cell_coords[i])] = pred_labels[i][0]
+
+    # Create an updated XML file with the classified labels to disk
+    write_classified_xml_output(source_xml_path, output_xml_path, cell_labels_dict)
 
 
 def extract_cell_imgs_from_img(
@@ -188,92 +276,13 @@ def write_classified_xml_output(
                     f"{prev_custom + " " if prev_custom else ""}structure {{type:{cell_labels_dict[tuple(coord_points)]};}}",
                 )
 
-        # MODIFIES GLOBAL XML NAMESPACE REGISTRY??? Can't find a way to do it locally
-        # register_namespace is required to avoid "ns0:" prefixes in output XML
-        # TODO: move to a better xml library
+        # MODIFIES GLOBAL XML NAMESPACE REGISTRY! Can't find a way to do it locally.
+        # register_namespace is required to avoid "ns0:" prefixes in output XML.
+        # Move to a better xml library?
         ET.register_namespace(
             "", "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"
         )
         tree.write(ouput_xml_path, encoding="utf-8", xml_declaration=True)
-
-
-def classify_cells_and_generate_xml_for_page(
-    source_img_path: str,
-    source_xml_path: str,
-    output_xml_path: str,
-    model: YOLO,
-) -> None:
-    """
-    Classifies cells for one page image and writes an updated XML file with the classification labels to disk.
-
-    :param source_img_path: path to the source image file
-    :param source_xml_path: path to the source XML file with coordinates
-    :param output_xml_path: path to the output XML file
-    :param model: YOLO model to use for prediction
-    """
-    cell_data = yield_annotated_cells(source_xml_path)
-    image_names = []
-    cell_coords = []
-    for image_name, coords, text in cell_data:
-        image_names.append(image_name)
-        cell_coords.append(coords)
-
-    source_img = cv2.imread(source_img_path)
-    cell_imgs = extract_cell_imgs_from_img(source_img, cell_coords)
-
-    cell_batches = create_image_batches(cell_imgs, imgs_per_batch=50)
-
-    # Predict labels (e.g. multi-line, same-as) for each batch of cell images
-    pred_labels = []
-    for batch in tqdm(cell_batches):
-        pred_labels += predict_cell_labels(model, batch)
-
-    # Create dict {coords: label} for each cell image
-    cell_labels_dict = {}
-    for i in range(len(cell_imgs)):
-        cell_labels_dict[tuple(cell_coords[i])] = pred_labels[i][0]
-
-    # Create an updated XML file with the classified labels to disk
-    write_classified_xml_output(source_xml_path, output_xml_path, cell_labels_dict)
-
-
-def process_images_and_generate_xml(model_path: str, data_dir_path: str) -> None:
-    """
-    Finds all the jpg files in the data directory and its subdirectories,
-    and for each jpg file generates an updated XML file with the classified cells in `JPG PARENT DIR/pageCellClassified/`.
-    Uses XML file from `JPG PARENT DIR/pageCell/` as the base.
-
-    :param model_path: path to the trained YOLO model
-    :param data_dir_path: path from which recursive jpg search is done
-    """
-    model = YOLO(model_path)
-
-    # Find all jpg files in the data directory and its subdirectories
-    # TODO: Is this actually how it should work? Not sure
-    jpg_paths = Path(data_dir_path).rglob("*.jpg")
-
-    jpg_paths = list(jpg_paths)[:3]
-
-    # For every jpg file, find the corresponding xml from pageCell dir
-    for jpg_path in jpg_paths:
-        # Find the corresponding xml file in the pageCell directory
-        xml_path = (jpg_path.parent / "pageCell" / jpg_path.name).with_suffix(".xml")
-        if not xml_path.exists():
-            print(f"No corresponding XML file found in {xml_path}.")
-            continue
-
-        # Create the output XML path
-        output_xml_path = (
-            jpg_path.parent / "pageCellClassified" / jpg_path.name
-        ).with_suffix(".xml")
-
-        # Ensure the output directory exists
-        output_xml_path.parent.mkdir(exist_ok=True)
-
-        # Classify cells and generate XML for each page
-        classify_cells_and_generate_xml_for_page(
-            jpg_path, xml_path, output_xml_path, model
-        )
 
 
 if __name__ == "__main__":
@@ -287,6 +296,6 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=str, help="Data directory")
     args = parser.parse_args()
 
-    process_images_and_generate_xml(args.model_path, args.data_dir)
+    classify_images_and_create_xml(args.model_path, args.data_dir)
 
     # Usage: python predict_cell_xml.py --model-path "model_path.pt" --data-dir "./datadir/"
