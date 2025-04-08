@@ -15,6 +15,10 @@ def compute_col_name_score(col: pd.Series) -> float:
     # Approximate how likely the given column is storing names. The format is unknown,
     # but we should be able to give an approximation based on features like median length
 
+    col = col.copy()
+
+    # Change cells with "---" to NaN
+    col = col.replace("---", pd.NA)
     # Drop every NaN, None and whitespace-only value
     col = col.dropna()
     col = col[col.str.strip() != ""]
@@ -28,7 +32,7 @@ def compute_col_name_score(col: pd.Series) -> float:
     return median_length
 
 
-def get_name_column(df: pd.DataFrame) -> tuple[int, float]:
+def get_name_column(df: pd.DataFrame) -> tuple[int | str, float]:
     """
     Get the name column from the DataFrame.
     """
@@ -36,7 +40,7 @@ def get_name_column(df: pd.DataFrame) -> tuple[int, float]:
     scores = df.apply(compute_col_name_score)
 
     # Get the column with the highest score
-    name_col = int(scores.idxmax())
+    name_col = scores.idxmax()
     return name_col, scores[name_col]
 
 
@@ -61,14 +65,12 @@ def remove_empty_columns_using_name_as_anchor(
         return df
 
     # Identify completely empty columns (all values are "---")
-    empty_cols = [
-        i
-        for i in range(num_cols)
-        if df.iloc[:, i].fillna("").apply(lambda x: str(x).strip() == "---").all()
-    ]
+    # Should be a list of bools, True if the column is empty
+    empty_cols = df.apply(lambda x: all(x == "---"), axis=0).to_list()
 
     # Get approximated name column id
     name_col, name_certainty_score = get_name_column(df)
+    name_col = int(df.columns.get_loc(name_col))  # type: ignore
 
     # Skip if the name column score is too low
     if name_certainty_score < 2.0:
@@ -90,67 +92,33 @@ def remove_empty_columns_using_name_as_anchor(
             )
         return df
 
-    # Calculate how many columns to keep on the left of the name column
-    cols_left = min(name_col, name_col_expected)
+    # Calculate how many columns should be removed from the left
+    rem_left = max(0, name_col - name_col_expected)
+    # Calculate how many columns should be removed from the right
+    rem_right = max(0, num_cols - num_cols_expected - rem_left)
 
-    # Calculate how many columns to keep on the right of the name column
-    cols_right = min(num_cols - name_col - 1, num_cols_expected - name_col_expected - 1)
-
-    # Generate the range of column indices to consider
-    candidate_range = []
-    for i in range(name_col - cols_left, name_col + cols_right + 1):
-        if 0 <= i < num_cols:
-            candidate_range.append(i)
-
-    # Find trim zones (consecutive empty columns at the start and end of the range)
-    left_trim_zone = []
-    right_trim_zone = []
-
-    # Identify empty columns at the start (left trim zone)
-    for i in candidate_range:
-        if i in empty_cols:
-            left_trim_zone.append(i)
-        else:
-            break
-
-    # Identify empty columns at the end (right trim zone)
-    for i in reversed(candidate_range):
-        if i in empty_cols:
-            right_trim_zone.insert(0, i)
-        else:
-            break
-
-    # Remove overlapping columns between left and right trim zones
-    common_cols = set(left_trim_zone) & set(right_trim_zone)
-    for col in common_cols:
-        right_trim_zone.remove(col)
-
-    # Calculate how many columns we need to remove
-    excess_cols = len(candidate_range) - num_cols_expected
-
-    # Prioritize removing empty columns from trim zones
-    cols_to_remove = []
-
-    # First try to remove from right trim zone
-    right_trim_count = min(len(right_trim_zone), excess_cols)
-    cols_to_remove.extend(right_trim_zone[:right_trim_count])
-    excess_cols -= right_trim_count
-
-    # Then try to remove from left trim zone if needed
-    if excess_cols > 0:
-        left_trim_count = min(len(left_trim_zone), excess_cols)
-        cols_to_remove.extend(left_trim_zone[:left_trim_count])
-        excess_cols -= left_trim_count
-
-    # Calculate columns to keep
-    cols_to_keep = [i for i in candidate_range if i not in cols_to_remove]
-
-    # Keep only the selected columns
     if verbose:
         print(
-            f"remove_empty_columns_using_name_as_anchor: {cols_to_remove} removed, {cols_to_keep} kept"
+            f"remove_empty_columns_using_name_as_anchor: cols:{num_cols} expected:{num_cols_expected} (removing {rem_left} left, removing {rem_right} right)"
         )
-    return df.iloc[:, cols_to_keep]
+
+    # Remove the empty columns from the left and right sides of the DataFrame
+    cols_to_remove = []
+    for i in range(rem_left):
+        if empty_cols[i]:
+            cols_to_remove.append(i)
+        else:
+            break
+    for i in range(num_cols - rem_right, num_cols):
+        if empty_cols[i]:
+            cols_to_remove.append(i)
+        else:
+            break
+
+    # Remove the empty columns from the DataFrame
+    df = df.drop(df.columns[cols_to_remove], axis=1)
+
+    return df
 
 
 def add_columns_using_name_as_anchor(
@@ -170,6 +138,7 @@ def add_columns_using_name_as_anchor(
 
     # Get approximated name column id
     name_col, _name_certainty_score = get_name_column(df)
+    name_col = int(df.columns.get_loc(name_col))  # type: ignore
 
     # TODO currently it's just the median length of non-empty strings in the column, transform to a 0-1 range
     if _name_certainty_score < 2.0:
@@ -219,7 +188,6 @@ def add_columns_using_name_as_anchor(
     if len(df.columns) != num_cols_expected:
         # We can assume df that reaches here should always have the correct number of columns
         # Df's where this isn't true should be caught by earlier returns
-        print(df)
         raise ValueError(
             f"Number of columns after adding: {len(df.columns)} != expected: {num_cols_expected}\n\tAdded left: {len(cols_to_insert_left)}, added right: {len(cols_to_insert_right)}\n\tName column: {orig_name_col}, expected: {name_col_expected}\n\tOrig num cols: {orig_num_cols}, expected: {num_cols_expected}",
         )
@@ -227,9 +195,9 @@ def add_columns_using_name_as_anchor(
     return df
 
 
-class TestColumnFixes(unittest.TestCase):
+class TestRemoveEmptyColumns(unittest.TestCase):
 
-    def test_remove_empty_columns_using_name_as_anchor(self):
+    def test_rem_from_left(self):
         # Test case 1: Basic case with empty columns on both sides
         df = pd.DataFrame(
             {
@@ -252,14 +220,296 @@ class TestColumnFixes(unittest.TestCase):
         result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
         expected = pd.DataFrame(
             {
-                2: ["John", "Jane", "Doe"],
+                2: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
                 3: ["---", "---", "---"],
             }
         )
-        print(result)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_rem_from_right(self):
+        # Test removing empty columns from the right side
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                2: ["30", "25", "40"],
+                3: ["---", "---", "---"],
+                4: ["---", "---", "---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
+        expected = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                2: ["30", "25", "40"],
+            }
+        )
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_rem_from_both_sides(self):
+        # Test removing empty columns from both sides
+        df = pd.DataFrame(
+            {
+                1: ["---", "---", "---"],
+                2: ["---", "---", "---"],
+                3: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                4: ["30", "25", "40"],
+                5: ["---", "---", "---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
+        expected = pd.DataFrame(
+            {
+                3: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                4: ["30", "25", "40"],
+            }
+        )
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_no_removal_needed(self):
+        # Test when no columns need to be removed (exact number of columns)
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                2: ["30", "25", "40"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        expected = df.copy()
+        result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_low_name_score(self):
+        # Test when name column score is too low
+        df = pd.DataFrame(
+            {
+                1: ["---", "---", "---", "---"],
+                2: ["J", "J", "J", "ho"],  # Very short names, low score
+                3: ["---", "---", "---", "---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        expected = df.copy()
+        result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_name_not_in_annotation(self):
+        # Test when 'name' is not found in annotation
+        df = pd.DataFrame(
+            {
+                1: ["---", "---", "---"],
+                2: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                3: ["---", "---", "---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["parish", "age"],  # No 'name' column
+            page="opening",
+        )
+        expected = df.copy()
+        result = remove_empty_columns_using_name_as_anchor(df, annotation, verbose=True)
         pd.testing.assert_frame_equal(result, expected)
 
 
-if __name__ == "__main__":
+class TestAddColumns(unittest.TestCase):
+    def test_add_to_left(self):
+        # Test adding columns to the left side
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                2: ["30", "25", "40"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=3,
+            col_headers=["parish", "name", "age"],
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Check that we now have 3 columns
+        self.assertEqual(len(result.columns), 3)
+        # Check that the name column is in the correct position
+        self.assertEqual(result.iloc[0, 1], "John Do fjdsfjadsfse")
+        # Check that the age column is in the correct position
+        self.assertEqual(result.iloc[0, 2], "30")
 
+    def test_add_to_right(self):
+        # Test adding columns to the right side
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Check that we now have 2 columns
+        self.assertEqual(len(result.columns), 2)
+        # Check that the name column is in the correct position
+        self.assertEqual(result.iloc[0, 0], "John Do fjdsfjadsfse")
+        # Check that the added column is empty
+        self.assertEqual(result.iloc[0, 1], "")
+
+    def test_no_addition_needed(self):
+        # Test when no columns need to be added (exact number of columns)
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+                2: ["30", "25", "40"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Check that no columns were added
+        self.assertEqual(len(result.columns), 2)
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_low_name_score(self):
+        # Test when name column score is too low
+        df = pd.DataFrame(
+            {
+                1: ["J", "J", "J", "ho"],  # Very short names, low score
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Should return the original DataFrame
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_name_not_in_annotation(self):
+        # Test when 'name' is not found in annotation
+        df = pd.DataFrame(
+            {
+                1: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=2,
+            col_headers=["parish", "age"],  # No 'name' column
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Should return the original DataFrame
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_name_after_expected(self):
+        # Test when actual name column position is after expected position
+        df = pd.DataFrame(
+            {
+                1: ["1", "2", "3"],
+                2: [
+                    "John Do fjdsfjadsfse",
+                    "Janefdsfads Smith",
+                    "Joefdsfjlkadsf Duncan",
+                ],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            number_of_columns=3,
+            col_headers=["name", "id", "age"],
+            page="opening",
+        )
+        result = add_columns_using_name_as_anchor(df, annotation)
+        # Should return the original DataFrame since name is at position 1 but should be at 0
+        pd.testing.assert_frame_equal(result, df)
+
+
+if __name__ == "__main__":
     unittest.main()
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestAddColumns)
+    # unittest.TextTestRunner(verbosity=2).run(suite)

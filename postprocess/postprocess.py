@@ -105,6 +105,7 @@ def post_process_zip(
         for book in parish_books:
             parish_books_mapping[book.folder_id()] = book
 
+        problem_tables: list[tuple[pd.DataFrame, ParishBook, str]] = []
         evaluation_matrix = pd.DataFrame(
             columns=[
                 "jpg",
@@ -143,14 +144,14 @@ def post_process_zip(
                     f"{book_dir.parent.name}_{book_dir.name}"
                 ]
 
-                problem_tables: list[tuple[pd.DataFrame, ParishBook]] = []
-
                 # Skip handdrawn ones for now
                 if "handdrawn" in book.book_type or "handrawn" in book.book_type:
                     print(f"Skipping handdrawn book: {book.folder_id()}")
                     continue
 
-                for jpg_path in tqdm(jpg_paths, f"{book_dir.name}"):
+                for jpg_path in tqdm(
+                    jpg_paths, f"{book_dir.parent.name}_{book_dir.name}"
+                ):
                     # Grab the final XML file from pageTextClassified/
                     xml_path = (
                         jpg_path.parent
@@ -193,19 +194,14 @@ def post_process_zip(
                                 table.table,
                                 print_types[book.book_type].table_annotations[i],
                             )
-                            # table.table = add_columns_using_name_as_anchor(
-                            #     table.table,
-                            #     print_types[book.book_type].table_annotations[i],
-                            # )
-                            col_count = len(table.table.columns)
-                            col_count_expected = (
-                                print_types[book.book_type]
-                                .table_annotations[i]
-                                .number_of_columns
+                            table.table = add_columns_using_name_as_anchor(
+                                table.table,
+                                print_types[book.book_type].table_annotations[i],
                             )
+                            col_count = len(table.table.columns)
 
                         if col_count != col_count_expected:
-                            problem_tables.append((table.table, book))
+                            problem_tables.append((table.table, book, jpg_path.name))
 
                         evaluation_matrix.loc[len(evaluation_matrix)] = [
                             jpg_path.name,
@@ -218,8 +214,29 @@ def post_process_zip(
         # Calculate and display evaluation statistics
         _, _ = calculate_evaluation_statistics(evaluation_matrix)
 
-        print("\n\n", problem_tables[0][1])
-        print("\n\n", problem_tables[0][0])
+        print(f"problem tables size: {len(problem_tables)}")
+        for i, prob in tqdm(enumerate(problem_tables), desc="Problem tables"):
+
+            table = problem_tables[i][0]
+            book = problem_tables[i][1]
+            jpg_path = problem_tables[i][2]
+
+            # Add top row to table with book name and print type
+            row_to_insert = [
+                book.book_type,
+                jpg_path,
+            ]
+            # Make sure that the row is the same length as the table
+            row_to_insert += [""] * (len(table.columns) - len(row_to_insert))
+            table.loc[-1] = row_to_insert
+            # Shift index and sort to make the new row the first row
+            table.index = table.index + 1
+            table = table.sort_index()
+
+            table.to_markdown(Path("debug_output") / f"problem_table_{i}.md")
+
+        print("\n\n", problem_tables[1][1])
+        print("\n\n", problem_tables[1][0])
 
 
 if __name__ == "__main__":
@@ -243,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parishes",
         type=str,
+        default="",
         help="Comma-separated list of parishes to process.",
     )
     args = parser.parse_args()
