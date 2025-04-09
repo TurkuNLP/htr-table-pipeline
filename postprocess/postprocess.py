@@ -9,6 +9,8 @@ import openpyxl
 from tqdm import tqdm
 import pandas as pd
 
+from tables_fix import remove_overlapping_tables
+
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
 
 from cols_fix import (
@@ -16,60 +18,11 @@ from cols_fix import (
     match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
-from table_types import Datatable, ParishBook, PrintTableAnnotation, PrintType
+from table_types import Datatable, ParishBook, TableAnnotation, PrintType
 from utilities.temp_unzip import TempExtractedData
 from xml_utils import extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
 from eval import calculate_evaluation_statistics
-
-
-def remove_operlapping_tables(tables: list[Datatable]) -> list[Datatable]:
-    """
-    Remove overlapping tables by keeping the larger one when significant overlap is detected.
-
-    Args:
-        tables: List of Datatable objects
-
-    Returns:
-        Filtered list of Datatable objects with overlapping tables removed
-    """
-    if not tables or len(tables) <= 1:
-        return tables
-
-    # Sort tables by area in descending order (largest first)
-    sorted_tables = sorted(tables, key=lambda t: t.rect.get_area(), reverse=True)
-
-    # Tables to keep after filtering
-    filtered_tables = []
-    removed_indices = set()
-
-    for i, table in enumerate(sorted_tables):
-        if i in removed_indices:
-            continue
-
-        filtered_tables.append(table)
-
-        # Compare with all smaller tables
-        for j in range(i + 1, len(sorted_tables)):
-            if j in removed_indices:
-                continue
-
-            smaller_table = sorted_tables[j]
-
-            # Check overlap
-            overlap_rect = table.rect.get_overlap_rect(smaller_table.rect)
-
-            if overlap_rect:
-                # Calculate overlap percentage relative to the smaller table
-                overlap_area = overlap_rect.get_area()
-                smaller_area = smaller_table.rect.get_area()
-                overlap_percentage = overlap_area / smaller_area
-
-                # If over 90% of the smaller table overlaps with the larger one, remove it
-                if overlap_percentage > 0.9:
-                    removed_indices.add(j)
-
-    return filtered_tables
 
 
 def rfind_first(path: Path, find: str) -> Optional[Path]:
@@ -162,13 +115,13 @@ def post_process_zip(
 
                     opening_number = int(jpg_path.stem.split("_")[-1])
 
-                    if "handrawn" in book.get_type_for_opening(opening_number):
-                        # TODO Add handrawn table processing
-                        continue
-
                     tables: list[Datatable]
                     with open(xml_path, "rt", encoding="utf-8") as xml_file:
                         tables = extract_datatables_from_xml(xml_file)
+
+                    if "handrawn" in book.get_type_for_opening(opening_number):
+                        # TODO Add handrawn table processing
+                        continue
 
                     table_count = len(tables)
                     table_count_expected = print_types[
@@ -177,7 +130,7 @@ def post_process_zip(
 
                     # Remove extra tables
                     if table_count > table_count_expected:
-                        tables = remove_operlapping_tables(tables)
+                        tables = remove_overlapping_tables(tables)
                         table_count = len(tables)  # Update table count after filtering
 
                     # Update evaluation_matrix

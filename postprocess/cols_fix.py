@@ -2,11 +2,11 @@ import unittest
 import pandas as pd
 
 
-from table_types import PrintTableAnnotation
+from table_types import TableAnnotation
 
 
 def match_col_count_for_empty_tables(
-    df: pd.DataFrame, annotation: PrintTableAnnotation
+    df: pd.DataFrame, annotation: TableAnnotation
 ) -> pd.DataFrame:
     """
     For tables with all cells empty ("---") corrects the number of columns to match the annotation.
@@ -68,7 +68,7 @@ def get_name_column(df: pd.DataFrame) -> tuple[int | str, float]:
 
 
 def remove_empty_columns_using_name_as_anchor(
-    df: pd.DataFrame, annotation: PrintTableAnnotation, verbose: bool = False
+    df: pd.DataFrame, annotation: TableAnnotation, verbose: bool = False
 ) -> pd.DataFrame:
     """
     Removes extra empty columns from the sides of the DataFrame using the name column as anchor.
@@ -145,7 +145,7 @@ def remove_empty_columns_using_name_as_anchor(
 
 
 def add_columns_using_name_as_anchor(
-    df: pd.DataFrame, annotation: PrintTableAnnotation
+    df: pd.DataFrame, annotation: TableAnnotation
 ) -> pd.DataFrame:
     """
     Add columns to the DataFrame's sides using the name column as anchor.
@@ -228,7 +228,7 @@ class TestEmptyTableColMatch(unittest.TestCase):
                 3: ["---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -246,7 +246,7 @@ class TestEmptyTableColMatch(unittest.TestCase):
                 2: ["---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Test 3",
             direction="in",
             col_headers=["name", "age", "destination"],
@@ -273,7 +273,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 3: ["---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -306,7 +306,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 4: ["---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -340,7 +340,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 5: ["---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -371,7 +371,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 2: ["30", "25", "40"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -390,7 +390,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 3: ["---", "---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -413,7 +413,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                 3: ["---", "---", "---"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["parish", "age"],  # No 'name' column
@@ -437,7 +437,7 @@ class TestAddColumns(unittest.TestCase):
                 2: ["30", "25", "40"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["parish", "name", "age"],
@@ -462,7 +462,7 @@ class TestAddColumns(unittest.TestCase):
                 ],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -488,7 +488,7 @@ class TestAddColumns(unittest.TestCase):
                 2: ["30", "25", "40"],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -506,7 +506,7 @@ class TestAddColumns(unittest.TestCase):
                 1: ["J", "J", "J", "ho"],  # Very short names, low score
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "age"],
@@ -527,7 +527,7 @@ class TestAddColumns(unittest.TestCase):
                 ],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["parish", "age"],  # No 'name' column
@@ -549,7 +549,7 @@ class TestAddColumns(unittest.TestCase):
                 ],
             }
         )
-        annotation = PrintTableAnnotation(
+        annotation = TableAnnotation(
             print_type="Print 3",
             direction="in",
             col_headers=["name", "id", "age"],

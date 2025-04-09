@@ -1,7 +1,7 @@
 from pathlib import Path
 import openpyxl
 
-from table_types import ParishBook, PrintTableAnnotation, PrintType
+from table_types import ParishBook, TableAnnotation, PrintType
 
 
 # Functions for reading metadata from the annotations excel file
@@ -89,7 +89,7 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
                 name=print_type,
                 tables_per_jpg="one table",
                 table_annotations=[
-                    PrintTableAnnotation(
+                    TableAnnotation(
                         print_type=print_type,
                         direction=direction,
                         col_headers=headers,
@@ -109,7 +109,7 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
             if isinstance(column_header, str):
                 column_header = column_header.strip()
             left_headers.append(column_header)
-        left_table = PrintTableAnnotation(
+        left_table = TableAnnotation(
             print_type=print_type,
             direction=direction,
             col_headers=left_headers,
@@ -139,7 +139,7 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
                 column_header = column_header.strip()
             right_headers.append(column_header)
 
-        right_table = PrintTableAnnotation(
+        right_table = TableAnnotation(
             print_type=print_type,
             direction=direction,
             col_headers=right_headers,

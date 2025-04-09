@@ -100,7 +100,7 @@ class ParishBook:
 
 
 @dataclass
-class PrintTableAnnotation:
+class TableAnnotation:
     print_type: str  # e.g. "Print 3", "Print 45", "Print 4"
     direction: str  # "in", "out", "both", "out abroad", "?", "out?"
     col_headers: list[str]  # list of column headers
@@ -137,7 +137,7 @@ class PrintType:
     name: str
     tables_per_jpg: str  # "one table" or "two tables"
     table_annotations: list[
-        PrintTableAnnotation
+        TableAnnotation
     ]  # list of table annotations. Length of 1 or 2
 
     @property
