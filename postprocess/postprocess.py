@@ -13,6 +13,7 @@ sys.path.append(str(Path("../")))  # Needed to import modules from the parent di
 
 from cols_fix import (
     add_columns_using_name_as_anchor,
+    match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
 from table_types import Datatable, ParishBook, PrintTableAnnotation, PrintType
@@ -144,11 +145,6 @@ def post_process_zip(
                     f"{book_dir.parent.name}_{book_dir.name}"
                 ]
 
-                # Skip handdrawn ones for now
-                if "handdrawn" in book.book_type or "handrawn" in book.book_type:
-                    print(f"Skipping handdrawn book: {book.folder_id()}")
-                    continue
-
                 for jpg_path in tqdm(
                     jpg_paths, f"{book_dir.parent.name}_{book_dir.name}"
                 ):
@@ -164,12 +160,20 @@ def post_process_zip(
                             f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
                         )
 
+                    opening_number = int(jpg_path.stem.split("_")[-1])
+
+                    if "handrawn" in book.get_type_for_opening(opening_number):
+                        # TODO Add handrawn table processing
+                        continue
+
                     tables: list[Datatable]
                     with open(xml_path, "rt", encoding="utf-8") as xml_file:
                         tables = extract_datatables_from_xml(xml_file)
 
                     table_count = len(tables)
-                    table_count_expected = print_types[book.book_type].table_count
+                    table_count_expected = print_types[
+                        book.get_type_for_opening(opening_number)
+                    ].table_count
 
                     # Remove extra tables
                     if table_count > table_count_expected:
@@ -178,30 +182,51 @@ def post_process_zip(
 
                     # Update evaluation_matrix
                     for i, table in enumerate(tables):
-                        col_count = len(table.table.columns)
+                        col_count = len(table.values.columns)
                         col_count_expected = (
                             (
-                                print_types[book.book_type]
+                                print_types[book.get_type_for_opening(opening_number)]
                                 .table_annotations[i]
                                 .number_of_columns
                             )
-                            if print_types[book.book_type].table_count == table_count
+                            if print_types[
+                                book.get_type_for_opening(opening_number)
+                            ].table_count
+                            == table_count
                             else None
                         )
 
                         if col_count != col_count_expected:
-                            table.table = remove_empty_columns_using_name_as_anchor(
-                                table.table,
-                                print_types[book.book_type].table_annotations[i],
+                            table.values = remove_empty_columns_using_name_as_anchor(
+                                table.values,
+                                print_types[
+                                    book.get_type_for_opening(opening_number)
+                                ].table_annotations[i],
                             )
-                            table.table = add_columns_using_name_as_anchor(
-                                table.table,
-                                print_types[book.book_type].table_annotations[i],
-                            )
-                            col_count = len(table.table.columns)
+                            col_count = len(table.values.columns)
 
                         if col_count != col_count_expected:
-                            problem_tables.append((table.table, book, jpg_path.name))
+                            table.values = add_columns_using_name_as_anchor(
+                                table.values,
+                                print_types[
+                                    book.get_type_for_opening(opening_number)
+                                ].table_annotations[i],
+                            )
+                            col_count = len(table.values.columns)
+
+                        if col_count != col_count_expected:
+                            # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
+                            # TODO Currently a row of "---" is kept so that it's not recognized as a header by other code, should this be so?
+                            table.values = match_col_count_for_empty_tables(
+                                table.values,
+                                print_types[
+                                    book.get_type_for_opening(opening_number)
+                                ].table_annotations[i],
+                            )
+                            col_count = len(table.values.columns)
+
+                        if col_count != col_count_expected:
+                            problem_tables.append((table.values, book, jpg_path.name))
 
                         evaluation_matrix.loc[len(evaluation_matrix)] = [
                             jpg_path.name,
@@ -215,6 +240,9 @@ def post_process_zip(
         _, _ = calculate_evaluation_statistics(evaluation_matrix)
 
         print(f"problem tables size: {len(problem_tables)}")
+
+        Path("debug_output").mkdir(exist_ok=True)
+
         for i, prob in tqdm(enumerate(problem_tables), desc="Problem tables"):
 
             table = problem_tables[i][0]
@@ -223,7 +251,7 @@ def post_process_zip(
 
             # Add top row to table with book name and print type
             row_to_insert = [
-                book.book_type,
+                book.book_types,
                 jpg_path,
             ]
             # Make sure that the row is the same length as the table
@@ -234,9 +262,6 @@ def post_process_zip(
             table = table.sort_index()
 
             table.to_markdown(Path("debug_output") / f"problem_table_{i}.md")
-
-        print("\n\n", problem_tables[1][1])
-        print("\n\n", problem_tables[1][0])
 
 
 if __name__ == "__main__":
@@ -272,4 +297,4 @@ if __name__ == "__main__":
         args.parishes.split(","),
     )
 
-    # Usage: python postprocess.py --annotations annotations_copy.xlsx --zip_dir test_zip_dir --output_dir output --parishes elimaki,iisalmen_kaupunkiseurakunta
+    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip_dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --output_dir output --parishes helsinki

@@ -1,6 +1,8 @@
 from io import TextIOWrapper
+from pathlib import Path
 import re
 from typing import Optional
+import unittest
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -95,36 +97,42 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
         rect = Rect.from_points(coord_points)
 
-        # Initialize lists for text values and cell types
-        table_texts: list[list[str]] = []
-        table_types: list[list[str]] = []
-
-        current_row_texts: list[str] = []
-        current_row_types: list[str] = []
-        current_row_id: Optional[int] = None
-
+        # First, determine the table dimensions
+        max_row = -1
+        max_col = -1
         for cell in table.findall(".//ns:TableCell", namespace):
             row_id = int(cell.attrib.get("row"))  # type: ignore
-            if (
-                current_row_id != None and row_id != current_row_id
-            ):  # previous row ended
-                table_texts.append(current_row_texts)
-                table_types.append(current_row_types)
-                current_row_texts = []
-                current_row_types = []
-                assert (
-                    row_id == current_row_id + 1
-                )  # assert that these are in correct order
-            current_row_id = row_id
-            column_id = int(cell.attrib.get("col"))  # type: ignore
-            assert int(column_id) == len(
-                current_row_texts
-            )  # assert that these are in correct order
-            text: str = read_text_from_cell(cell)
+            col_id = int(cell.attrib.get("col"))  # type: ignore
+            max_row = max(max_row, row_id)
+            max_col = max(max_col, col_id)
+
+        # Create empty DataFrames with appropriate dimensions
+        df_text = pd.DataFrame("", index=range(max_row + 1), columns=range(max_col + 1))
+        df_type = pd.DataFrame(
+            "empty", index=range(max_row + 1), columns=range(max_col + 1)
+        )
+
+        # Track row order for validation
+        last_row_id = -1
+
+        # Fill DataFrames directly
+        for cell in table.findall(".//ns:TableCell", namespace):
+            row_id = int(cell.attrib.get("row"))  # type: ignore
+            col_id = int(cell.attrib.get("col"))  # type: ignore
+
+            # Validate row ordering (similar to the original assertion)
+            if row_id < last_row_id:
+                raise ValueError(
+                    f"Cells not in row order. Found row {row_id} after row {last_row_id}"
+                )
+            last_row_id = max(last_row_id, row_id)
+
+            # Get cell text
+            text = read_text_from_cell(cell)
 
             # Get cell type
             custom = cell.attrib.get("custom")
-            cell_type: str = "line"
+            cell_type = "line"
             match custom:
                 case "structure {type:line;}":
                     cell_type = "line"
@@ -139,22 +147,12 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
                         f"Unknown cell type: {custom} for cell {cell.attrib.get('id')}"
                     )
 
-            assert text is not None
-            assert text is not np.nan
-            current_row_texts.append(text)
-            current_row_types.append(cell_type)
+            # Set values directly in DataFrames
+            df_text.iloc[row_id, col_id] = text
+            df_type.iloc[row_id, col_id] = cell_type
 
-        if current_row_texts:
-            table_texts.append(current_row_texts)
-            table_types.append(current_row_types)
-
-        # Convert the lists to pandas DataFrames
-        df_text = pd.DataFrame(table_texts)
-        df_type = pd.DataFrame(table_types)
-
-        # Fill NaN values
-        df_text.fillna("---", inplace=True)
-        df_type.fillna("empty", inplace=True)
+        # Fill any remaining empty cells
+        df_text.replace("", "---", inplace=True)
 
         # Assert that there are no cells with None value
         assert (

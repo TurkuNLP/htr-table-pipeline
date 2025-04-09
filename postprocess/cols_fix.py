@@ -1,11 +1,34 @@
-import argparse
-from pathlib import Path
 import unittest
 import pandas as pd
 
 
 from table_types import PrintTableAnnotation
-from xml_utils import extract_datatables_from_xml
+
+
+def match_col_count_for_empty_tables(
+    df: pd.DataFrame, annotation: PrintTableAnnotation
+) -> pd.DataFrame:
+    """
+    For tables with all cells empty ("---") corrects the number of columns to match the annotation.
+    """
+    # Check if everything is empty ("---")
+    for col in df.columns:
+        if all(df[col] == "---"):
+            continue
+        else:
+            return df
+
+    # Check if the number of columns is correct
+    if len(df.columns) == annotation.number_of_columns:
+        return df
+
+    # If the number of columns is not correct, create a new DataFrame with the correct number of columns
+    new_df = pd.DataFrame(columns=annotation.col_headers)
+
+    # Add a row of "---" so that the table doesn't get detected as a header later on
+    new_df.loc[0] = ["---"] * annotation.number_of_columns
+
+    return new_df
 
 
 def compute_col_name_score(col: pd.Series) -> float:
@@ -195,6 +218,46 @@ def add_columns_using_name_as_anchor(
     return df
 
 
+class TestEmptyTableColMatch(unittest.TestCase):
+    def test_too_big(self):
+        # Test case 1: Basic case with empty columns
+        df = pd.DataFrame(
+            {
+                1: ["---", "---", "---"],
+                2: ["---", "---", "---"],
+                3: ["---", "---", "---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Print 3",
+            direction="in",
+            col_headers=["name", "age"],
+            page="opening",
+        )
+        result = match_col_count_for_empty_tables(df, annotation)
+        expected = pd.DataFrame(columns=["name", "age"])
+        expected.loc[0] = ["---", "---"]
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_fill(self):
+        df = pd.DataFrame(
+            {
+                1: ["---"],
+                2: ["---"],
+            }
+        )
+        annotation = PrintTableAnnotation(
+            print_type="Test 3",
+            direction="in",
+            col_headers=["name", "age", "destination"],
+            page="opening",
+        )
+        result = match_col_count_for_empty_tables(df, annotation)
+        expected = pd.DataFrame(columns=["name", "age", "destination"])
+        expected.loc[0] = ["---", "---", "---"]
+        pd.testing.assert_frame_equal(result, expected)
+
+
 class TestRemoveEmptyColumns(unittest.TestCase):
 
     def test_rem_from_left(self):
@@ -213,7 +276,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -247,7 +309,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -282,7 +343,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -314,7 +374,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -334,7 +393,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -358,7 +416,6 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["parish", "age"],  # No 'name' column
             page="opening",
         )
@@ -383,7 +440,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=3,
             col_headers=["parish", "name", "age"],
             page="opening",
         )
@@ -409,7 +465,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -436,7 +491,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -455,7 +509,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["name", "age"],
             page="opening",
         )
@@ -477,7 +530,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=2,
             col_headers=["parish", "age"],  # No 'name' column
             page="opening",
         )
@@ -500,7 +552,6 @@ class TestAddColumns(unittest.TestCase):
         annotation = PrintTableAnnotation(
             print_type="Print 3",
             direction="in",
-            number_of_columns=3,
             col_headers=["name", "id", "age"],
             page="opening",
         )
@@ -510,6 +561,9 @@ class TestAddColumns(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    # unittest.main()
     # suite = unittest.TestLoader().loadTestsFromTestCase(TestAddColumns)
     # unittest.TextTestRunner(verbosity=2).run(suite)
+
+    suite = unittest.TestLoader().loadTestsFromTestCase(TestEmptyTableColMatch)
+    unittest.TextTestRunner(verbosity=2).run(suite)

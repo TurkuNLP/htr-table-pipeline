@@ -65,14 +65,17 @@ class Datatable:
     """
 
     rect: Rect
-    id: str
-    table: pd.DataFrame  # the table data
+    id: str  # ID of the table in the XML
+    values: pd.DataFrame  # the table data
+    # coords: pd.DataFrame  # Coordinates of the individual table cells
 
 
 @dataclass
 class ParishBook:
     parish_name: str  # normalized parish name from annotations file
-    book_type: str  # e.g. "Handrawn in/out", "Print 3", "Print 45"...
+    book_types: dict[
+        str, tuple[int, int]
+    ]  # e.g. {"Handrawn in/out": (1, 112)}, {"Print 21": (1, 50), "Print 22": (50, 661)}
     years: str
     source: str
     doctype: str
@@ -83,12 +86,23 @@ class ParishBook:
         """
         return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.lower()}"
 
+    def get_type_for_opening(self: "ParishBook", opening: int) -> str:
+        """
+        Returns the type of the table for the given opening.
+        """
+        for book_type, (start, end) in self.book_types.items():
+            if start <= opening <= end:
+                return book_type
+        raise ValueError(
+            f"Opening {opening} not found in book {self.parish_name} type {self.book_types}"
+        )
+        return "unknown"
+
 
 @dataclass
 class PrintTableAnnotation:
     print_type: str  # e.g. "Print 3", "Print 45", "Print 4"
     direction: str  # "in", "out", "both", "out abroad", "?", "out?"
-    number_of_columns: int  # number of columns in the table
     col_headers: list[str]  # list of column headers
     page: str  # "opening", "left", "right"
 
@@ -109,6 +123,13 @@ class PrintTableAnnotation:
                 else:
                     cols[i] = "unknown"
         return cols
+
+    @property
+    def number_of_columns(self) -> int:
+        """
+        Returns the number of columns in the table.
+        """
+        return len(self.col_headers)
 
 
 @dataclass

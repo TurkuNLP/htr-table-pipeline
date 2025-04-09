@@ -7,6 +7,27 @@ from table_types import ParishBook, PrintTableAnnotation, PrintType
 # Functions for reading metadata from the annotations excel file
 
 
+def parse_book_type(raw_book_type: str) -> dict[str, tuple[int, int]]:
+    """
+    Parses the book type from the annotations file.
+
+    E.g. Print 21:1-50, print 22:50-661 -> {"Print 21": (1, 50), "Print 22": (50, 661)}
+    """
+    book_type = {}
+    for book in raw_book_type.split(","):
+        book = book.strip()
+        if ":" in book:
+            name, years = book.split(":")
+            years = years.split("-")
+            start = int(years[0])
+            end = int(years[1])
+            book_type[name.strip().lower()] = (start, end)
+        else:
+            name = book
+            book_type[name.strip().lower()] = (0, 999999)
+    return book_type
+
+
 def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook]:
     """
     Returns a list of parish books from the annotations file.
@@ -17,13 +38,13 @@ def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook
     parish_books = []
     for row in range(2, ws.max_row + 1):  # skip headers but read everything else
         parish_name = ws.cell(row=row, column=1).value
-        book_type = ws.cell(row=row, column=19).value
+        raw_book_type = str(ws.cell(row=row, column=19).value)
         years = ws.cell(row=row, column=8).value
         source = ws.cell(row=row, column=9).value
         doctype = ws.cell(row=row, column=17).value
         book = ParishBook(
             str(parish_name),
-            str(book_type).lower(),
+            parse_book_type(raw_book_type),
             str(years),
             str(source).lower(),
             str(doctype).lower(),
@@ -38,7 +59,7 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
     ws = wb.worksheets[1]  # second sheet
     types: dict[str, PrintType] = {}
     for row in range(2, ws.max_row + 1):  # skip headers but read everything else
-        print_type = str(ws.cell(row=row, column=1).value)
+        print_type = str(ws.cell(row=row, column=1).value).lower()
         # table_type is either "one table" or "two tables" or None
         table_type: str | None = ws.cell(row=row, column=2).value  # type: ignore
         if table_type is None:
@@ -71,7 +92,6 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
                     PrintTableAnnotation(
                         print_type=print_type,
                         direction=direction,
-                        number_of_columns=number_of_columns,
                         col_headers=headers,
                         page="opening",
                     )
@@ -92,7 +112,6 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
         left_table = PrintTableAnnotation(
             print_type=print_type,
             direction=direction,
-            number_of_columns=number_of_columns,
             col_headers=left_headers,
             page="left",
         )
@@ -123,7 +142,6 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
         right_table = PrintTableAnnotation(
             print_type=print_type,
             direction=direction,
-            number_of_columns=number_of_columns,
             col_headers=right_headers,
             page="right",
         )
