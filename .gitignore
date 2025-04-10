@@ -6,3 +6,6 @@ test_zip_dir/
 debug_output/
 
 .env
+
+# temp excel files
+~$*.xlsx
