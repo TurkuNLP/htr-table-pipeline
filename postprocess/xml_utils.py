@@ -48,7 +48,7 @@ def read_text_from_cell(
             text_lines.append(text_line)
     text: str = "\n".join(l for l in text_lines).strip()
     if text == "":
-        text = "---"
+        text = ""
     text = str(text)
     return text
 
@@ -69,9 +69,21 @@ def resolve_same_as_cells(df_text: pd.DataFrame, df_type: pd.DataFrame) -> pd.Da
                         break
                 else:
                     # If no non-empty cell is found, set to empty
-                    df_text.iloc[row_id, col_id] = "---"
+                    df_text.iloc[row_id, col_id] = ""
 
     return df_text
+
+
+def compute_bounding_rect(coords: list[tuple[int, int]]) -> Rect:
+    """
+    Compute the bounding rectangle of a set of coordinates.
+    :param coords: list of tuples of coordinates [(x1,y1), (x2,y2), (x3,y3), ...]
+    :return: Rect object representing the bounding rectangle
+    """
+    x_coords, y_coords = zip(*coords)
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    return Rect(x_min, y_min, x_max - x_min, y_max - y_min)
 
 
 def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
@@ -91,12 +103,6 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         if table_id is None:
             raise ValueError("Table ID not found in the XML file.")
 
-        # get the table rectangle
-        coords_elem = table.find(".//ns:Coords", namespace)
-        coord_points = parse_coords(str(coords_elem.attrib.get("points")))  # type: ignore
-
-        rect = Rect.from_points(coord_points)
-
         # First, determine the table dimensions
         max_row = -1
         max_col = -1
@@ -111,6 +117,7 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         df_type = pd.DataFrame(
             "empty", index=range(max_row + 1), columns=range(max_col + 1)
         )
+        cell_rects: list[tuple[int, int]] = []
 
         # Track row order for validation
         last_row_id = -1
@@ -129,6 +136,14 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
             # Get cell text
             text = read_text_from_cell(cell)
+            df_text.iloc[row_id, col_id] = text
+
+            # Get cell coordinates
+            coords_elem = cell.find(".//ns:Coords", namespace)
+            if coords_elem is None:
+                raise ValueError(f"Coords not found for cell {cell.attrib.get('id')}")
+            coord_points = parse_coords(str(coords_elem.attrib.get("points")))
+            cell_rects.extend(coord_points)
 
             # Get cell type
             custom = cell.attrib.get("custom")
@@ -147,12 +162,11 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
                         f"Unknown cell type: {custom} for cell {cell.attrib.get('id')}"
                     )
 
-            # Set values directly in DataFrames
-            df_text.iloc[row_id, col_id] = text
             df_type.iloc[row_id, col_id] = cell_type
 
         # Fill any remaining empty cells
-        df_text.replace("", "---", inplace=True)
+        df_text.replace("", "", inplace=True)
+        df_text.fillna("", inplace=True)
 
         # Assert that there are no cells with None value
         assert (
@@ -164,6 +178,13 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
         # Resolve "same-as" cells to values from above
         df_text = resolve_same_as_cells(df_text, df_type)
+
+        # get the table rectangle
+        # TODO !!! recompute the aabb from the cell coords
+        # coords_elem = table.find(".//ns:Coords", namespace)
+        # coord_points = parse_coords(str(coords_elem.attrib.get("points")))  # type: ignore
+        # rect = Rect.from_points(coord_points)
+        rect = compute_bounding_rect(cell_rects)
 
         tables.append(Datatable(rect, table_id, df_text))
 
