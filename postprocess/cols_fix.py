@@ -9,11 +9,11 @@ def match_col_count_for_empty_tables(
     df: pd.DataFrame, annotation: TableAnnotation
 ) -> pd.DataFrame:
     """
-    For tables with all cells empty ("---") corrects the number of columns to match the annotation.
+    For tables with all cells empty ("") corrects the number of columns to match the annotation.
     """
-    # Check if everything is empty ("---")
+    # Check if everything is empty ("")
     for col in df.columns:
-        if all(df[col] == "---"):
+        if all(df[col] == ""):
             continue
         else:
             return df
@@ -25,8 +25,8 @@ def match_col_count_for_empty_tables(
     # If the number of columns is not correct, create a new DataFrame with the correct number of columns
     new_df = pd.DataFrame(columns=annotation.col_headers)
 
-    # Add a row of "---" so that the table doesn't get detected as a header later on
-    new_df.loc[0] = ["---"] * annotation.number_of_columns
+    # Add a row of "" so that the table doesn't get detected as a header later on
+    new_df.loc[0] = [""] * annotation.number_of_columns
 
     return new_df
 
@@ -40,8 +40,8 @@ def compute_col_name_score(col: pd.Series) -> float:
 
     col = col.copy()
 
-    # Change cells with "---" to NaN
-    col = col.replace("---", pd.NA)
+    # Change cells with "" to NaN
+    col = col.replace("", pd.NA)
     # Drop every NaN, None and whitespace-only value
     col = col.dropna()
     col = col[col.str.strip() != ""]
@@ -72,7 +72,7 @@ def remove_empty_columns_using_name_as_anchor(
 ) -> pd.DataFrame:
     """
     Removes extra empty columns from the sides of the DataFrame using the name column as anchor.
-    Only removes columns where all values are "---" and only from the sides, never from between
+    Only removes columns where all values are "" and only from the sides, never from between
     non-empty columns to preserve the annotation header order.
     """
     # Get the number of columns in the DataFrame
@@ -87,9 +87,9 @@ def remove_empty_columns_using_name_as_anchor(
             )
         return df
 
-    # Identify completely empty columns (all values are "---")
+    # Identify completely empty columns (all values are "")
     # Should be a list of bools, True if the column is empty
-    empty_cols = df.apply(lambda x: all(x == "---"), axis=0).to_list()
+    empty_cols = df.apply(lambda x: all(x == ""), axis=0).to_list()
 
     # Get approximated name column id
     name_col, name_certainty_score = get_name_column(df)
@@ -223,9 +223,9 @@ class TestEmptyTableColMatch(unittest.TestCase):
         # Test case 1: Basic case with empty columns
         df = pd.DataFrame(
             {
-                1: ["---", "---", "---"],
-                2: ["---", "---", "---"],
-                3: ["---", "---", "---"],
+                1: ["", "", ""],
+                2: ["", "", ""],
+                3: ["", "", ""],
             }
         )
         annotation = TableAnnotation(
@@ -236,14 +236,14 @@ class TestEmptyTableColMatch(unittest.TestCase):
         )
         result = match_col_count_for_empty_tables(df, annotation)
         expected = pd.DataFrame(columns=["name", "age"])
-        expected.loc[0] = ["---", "---"]
+        expected.loc[0] = ["", ""]
         pd.testing.assert_frame_equal(result, expected)
 
     def test_fill(self):
         df = pd.DataFrame(
             {
-                1: ["---"],
-                2: ["---"],
+                1: [""],
+                2: [""],
             }
         )
         annotation = TableAnnotation(
@@ -254,7 +254,7 @@ class TestEmptyTableColMatch(unittest.TestCase):
         )
         result = match_col_count_for_empty_tables(df, annotation)
         expected = pd.DataFrame(columns=["name", "age", "destination"])
-        expected.loc[0] = ["---", "---", "---"]
+        expected.loc[0] = ["", "", ""]
         pd.testing.assert_frame_equal(result, expected)
 
 
@@ -264,13 +264,13 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         # Test case 1: Basic case with empty columns on both sides
         df = pd.DataFrame(
             {
-                1: ["---", "---", "---"],
+                1: ["", "", ""],
                 2: [
                     "John Do fjdsfjadsfse",
                     "Janefdsfads Smith",
                     "Joefdsfjlkadsf Duncan",
                 ],
-                3: ["---", "---", "---"],
+                3: ["", "", ""],
             }
         )
         annotation = TableAnnotation(
@@ -287,7 +287,7 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                     "Janefdsfads Smith",
                     "Joefdsfjlkadsf Duncan",
                 ],
-                3: ["---", "---", "---"],
+                3: ["", "", ""],
             }
         )
         pd.testing.assert_frame_equal(result, expected)
@@ -302,8 +302,8 @@ class TestRemoveEmptyColumns(unittest.TestCase):
                     "Joefdsfjlkadsf Duncan",
                 ],
                 2: ["30", "25", "40"],
-                3: ["---", "---", "---"],
-                4: ["---", "---", "---"],
+                3: ["", "", ""],
+                4: ["", "", ""],
             }
         )
         annotation = TableAnnotation(
@@ -329,15 +329,15 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         # Test removing empty columns from both sides
         df = pd.DataFrame(
             {
-                1: ["---", "---", "---"],
-                2: ["---", "---", "---"],
+                1: ["", "", ""],
+                2: ["", "", ""],
                 3: [
                     "John Do fjdsfjadsfse",
                     "Janefdsfads Smith",
                     "Joefdsfjlkadsf Duncan",
                 ],
                 4: ["30", "25", "40"],
-                5: ["---", "---", "---"],
+                5: ["", "", ""],
             }
         )
         annotation = TableAnnotation(
@@ -385,9 +385,9 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         # Test when name column score is too low
         df = pd.DataFrame(
             {
-                1: ["---", "---", "---", "---"],
+                1: ["", "", "", ""],
                 2: ["J", "J", "J", "ho"],  # Very short names, low score
-                3: ["---", "---", "---", "---"],
+                3: ["", "", "", ""],
             }
         )
         annotation = TableAnnotation(
@@ -404,13 +404,13 @@ class TestRemoveEmptyColumns(unittest.TestCase):
         # Test when 'name' is not found in annotation
         df = pd.DataFrame(
             {
-                1: ["---", "---", "---"],
+                1: ["", "", ""],
                 2: [
                     "John Do fjdsfjadsfse",
                     "Janefdsfads Smith",
                     "Joefdsfjlkadsf Duncan",
                 ],
-                3: ["---", "---", "---"],
+                3: ["", "", ""],
             }
         )
         annotation = TableAnnotation(
