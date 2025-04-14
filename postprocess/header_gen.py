@@ -28,11 +28,53 @@ class AnnotateHeadersMulti(dspy.Signature):
     ordered_headers: list[str] = dspy.OutputField()
 
 
-def generate_header_annotations_for_tables(
+class AnnotateHeaders(dspy.Signature):
+    """
+    Guess the column headers of this migration data table. The data may be in Finnish or Swedish and likely has severe OCR errors.
+
+    Commonly found headers are (in no particular order): "name": str, "parish": str, "male": None | int, "female": None | int, "notes": str. You can use "unknown" for columns that are not identifiable.
+
+    "male" and "female" columns describe gender and are often adjacent. They usually store one-character or empty values.
+
+    Make sure to give as many headers as the number of columns and that their order matches the table content.
+    """
+
+    table: str = dspy.InputField()
+    number_of_columns: int = dspy.InputField()
+    ordered_headers: list[str] = dspy.OutputField()
+
+
+def generate_header_annotations(
+    table: Datatable,
+    number_of_columns: int,
+) -> list[str]:
+    """
+    Generate header annotations for a table using an LM.
+
+    Args:
+        table: Datatable object
+        number_of_columns: Expected number of columns in the table
+
+    Returns:
+        Tuple with list of header names for the columns and the table used for annotation.
+    """
+
+    # Get header annotations
+    classify = dspy.Predict(AnnotateHeaders)
+    res = classify(
+        table=table.values.to_markdown(index=False), number_of_columns=number_of_columns
+    )
+    return res.ordered_headers
+
+
+def generate_header_annotations_multi(
     tables: list[Datatable],
-    sample_size: int = 4,
+    sample_size: int = 5,
     rows_per_table: int = 10,
-) -> tuple[list[str], list[Datatable]]:
+) -> tuple[
+    list[str],
+    list[Datatable],
+]:
     """
     Generate header annotations for tables using an LM.
 
@@ -108,13 +150,13 @@ if __name__ == "__main__":
             tables.append(file_tables[0])
 
     # Get header annotations from the updated function
-    headers, sample_tables = generate_header_annotations_for_tables(tables)
+    Header, sample_tables = generate_header_annotations_multi(tables)
 
-    print(f"Table headers: {headers}")
+    print(f"Table headers: {Header}")
 
     try:
         for i, table in enumerate(sample_tables):
-            table.values.columns = headers
+            table.values.columns = Header
             table.values.to_markdown(Path(f"dspy_test_{i}.md"), index=False)
     except ValueError as e:
         print(f"Error: {e}")

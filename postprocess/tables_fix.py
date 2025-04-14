@@ -1,7 +1,9 @@
 from table_types import Datatable
 
 
-def remove_overlapping_tables(tables: list[Datatable]) -> list[Datatable]:
+def remove_overlapping_tables(
+    tables: list[Datatable], threshold=0.9
+) -> list[Datatable]:
     """
     Remove overlapping tables by keeping the larger one when significant overlap is detected.
 
@@ -43,8 +45,8 @@ def remove_overlapping_tables(tables: list[Datatable]) -> list[Datatable]:
                 smaller_area = smaller_table.rect.get_area()
                 overlap_percentage = overlap_area / smaller_area
 
-                # If over 90% of the smaller table overlaps with the larger one, remove it
-                if overlap_percentage > 0.9:
+                # If over threshold % of the smaller table overlaps with the larger one, remove it
+                if overlap_percentage > threshold:
                     removed_indices.add(j)
 
     return filtered_tables

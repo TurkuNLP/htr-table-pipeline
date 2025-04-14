@@ -92,11 +92,13 @@ class ParishBook:
         """
         for book_type, (start, end) in self.book_types.items():
             if start <= opening <= end:
+                if "halfbook" in book_type or "free" in book_type:
+                    return "handrawn misc"  # TODO does this need custom behaviour?
                 return book_type
-        raise ValueError(
-            f"Opening {opening} not found in book {self.parish_name} type {self.book_types}"
-        )
-        return "unknown"
+        return "handrawn misc"
+
+    def __hash__(self) -> int:
+        return hash(self.folder_id())
 
 
 @dataclass
@@ -112,8 +114,50 @@ class TableAnnotation:
         list of classified column headers, e.g. ["namn"] or ["nimi"] -> ["name"]
         """
         cols = self.col_headers.copy()
-        terms = {
-            "name": ["namn", "nimi", "name"],
+        terms: dict[str, set[str]] = {
+            "name": set(["namn", "nimi", "name"]),
+            "male": set(["miespuoli", "mp", "miehenp"]),
+            "female": set(["naispuoli", "vp", "vaimonp"]),
+            "parish": set(
+                [
+                    "mihin seurakuntaan on mennyt",
+                    "mihin",
+                    "mihin muuttanut",
+                    "mihin muuttavat",
+                    "mihinkä",
+                    "lähtöpaikka",
+                    "maa, jonne muutto ilmotettu tahi otaksutaan tapahtuneeksi",
+                    "paikka, johon muutto tapahtuu",
+                    "paikka, johon muuttaa",
+                    "seurakunta, johon muutettiin",
+                    "seurakunta, johon muutti",
+                    "seurakunta mihin muuttaa",
+                    "seurakunta, johon muuttaa",
+                    "seurak. nimi johon muuttaa",
+                    "hvart flyttat",
+                    "flyttet till",
+                    "muuttopaikka",
+                    "församling, dit utflytning skett",
+                    "(muuttokirjan)paikka",
+                    "mistä seurakunnasta muutettiin",
+                    "tulopaikka",
+                    "mistä seurakunnasta on tullut",
+                    "mistä",
+                    "mistä muuttanut",
+                    "mistä muuttavat",
+                    "seurakunta, josta muutti",
+                    "seurakunta, mistä muuttanut",
+                    "seurakunta, josta muuttaa",
+                    "seurak nimi josta on tullut",
+                    "paikka, josta tuli",
+                    "paikka josta muutti",
+                    "från vilken församling inflyttningen skett",
+                    "hvarifrån kommen",
+                    "hvarifrån de inflyttat",
+                    "muuttopaikka",
+                    "församling, dit utflytning skett",
+                ],
+            ),
         }
         for i, col in enumerate(cols):
             for key, values in terms.items():

@@ -61,7 +61,15 @@ def resolve_same_as_cells(df_text: pd.DataFrame, df_type: pd.DataFrame) -> pd.Da
     """
     for row_id in range(df_text.shape[0]):
         for col_id in range(df_text.shape[1]):
-            if df_type.iloc[row_id, col_id] == "same-as":
+            if df_type.iloc[row_id, col_id] == "same-as" or str(
+                df_text.iloc[row_id, col_id]
+            ).strip() in [
+                '"',
+                "S",
+                "s.",
+                "s",
+                "5",  # A bit questionable to replace these...
+            ]:
                 # Find the first non-"same-as" cell in the same column above
                 for i in range(row_id - 1, -1, -1):
                     if df_type.iloc[i, col_id] != "same-as":
