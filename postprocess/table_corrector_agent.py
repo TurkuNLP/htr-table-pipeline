@@ -2,35 +2,53 @@ import argparse
 import os
 from pathlib import Path
 import random
+import sys
 from dotenv import load_dotenv
 import dspy
 import pandas as pd
 
+from metadata import get_print_type_for_jpg
 from tables_fix import remove_overlapping_tables
 from xml_utils import extract_datatables_from_xml
 
 
-def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
-    table_mod = TableModification(table)
+class HeaderTranslation(dspy.Signature):
+    """Translate the headers (from 1800s Finnish church migration document) to English."""
 
-    instructions = "Modify the table so that it best matches the headers."
+    headers: list[str] = dspy.InputField()
+    translated_headers: list[str] = dspy.OutputField()
+
+
+def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
+    # Translate the headers
+    translate = dspy.Predict(HeaderTranslation)
+    translated_headers: list[str] = translate(headers=headers).translated_headers  # type: ignore
+
+    if translated_headers is None or len(translated_headers) != len(headers):
+        translated_headers = headers
+
+    # Table modification
+    table_mod = TableModification(table, headers, translated_headers)
+
+    # Initialize the ReAct agent
+    instructions = """Modify the table so that it best matches the headers. Ensure that the name column (or equivalent) is at the correct position."""
+
     signature = dspy.Signature("table: str, headers: list[str] -> successful: bool", instructions)  # type: ignore
     react = dspy.ReAct(
         signature,
         tools=[
-            table_mod.remove_column,
-            table_mod.insert_empty_column,
-            table_mod.swap_columns,
+            table_mod.remove_columns,
+            table_mod.insert_empty_columns,
+            # table_mod.shift_table,
         ],
-        max_iters=5,
+        max_iters=9,
     )
 
+    # Run the ReAct agent
     res = react(
-        table=table_mod.get_table_header(),
-        headers=headers,
+        table=table_mod.get_table_head(),
+        headers=translated_headers,
     )
-
-    print(f"correction successful: {res.successful}")
 
     try:
         # try setting the table's column names to the headers
@@ -45,47 +63,76 @@ def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
 
 
 class TableModification:
-    def __init__(self, table: pd.DataFrame):
+    def __init__(
+        self, table: pd.DataFrame, headers: list[str], translated_headers: list[str]
+    ) -> None:
         self.table = table
         self.table.columns = list(range(self.table.columns.size))
+        self.goal_col_count = len(headers)
+        self.translated_headers = translated_headers
 
-    def get_table_header(self) -> str:
-        s = f"Table has {len(self.table.columns)} columns.\n\n"
-        s += self.table.head(10).to_markdown(index=False)
+    def get_position_of_col_with_longest_strings(self) -> int:
+        """
+        Get the position of the column with the longest strings.
+        """
+        max_length = 0
+        max_col_index = -1
+
+        for col in range(len(self.table.columns)):
+            col_length = self.table[col].astype(str).str.len().max()
+            if col_length > max_length:
+                max_length = col_length
+                max_col_index = col
+
+        return max_col_index
+
+    def get_table_head(self) -> str:
+        s = f"Table has {len(self.table.columns)} columns. Should be {self.goal_col_count}.\n\n"
+        for i, header in enumerate(self.translated_headers):
+            s += f"Index {i} should be '{header}'\n"
+        s += "\n"
+        s += f"The column with the longest strings (likely the name column) is currently at index {self.get_position_of_col_with_longest_strings()}."
+        s += "\n\n"
+        s += self.table.head(8).to_markdown(index=False)
         return s
 
-    def remove_column(self, column_index: int) -> str:
+    def remove_columns(self, column_indices: list[int]) -> str:
         """
-        Remove a column from the table.
+        Remove the given columns from the table.
         """
-        if 0 <= column_index < len(self.table.columns):
-            self.table.drop(column_index, axis=1, inplace=True)
+        try:
+            self.table.drop(column_indices, axis=1, inplace=True)
             self.table.columns = list(range(self.table.columns.size))
-            return self.get_table_header()
-        else:
-            return "Invalid column index."
-
-    def insert_empty_column(self, column_index: int) -> str:
-        """
-        Insert an empty column into the table.
-        """
-        if 0 <= column_index <= len(self.table.columns):
-            self.table.insert(column_index, f"Column {column_index + 1}", "")
-            self.table.columns = list(range(self.table.columns.size))
-            return self.get_table_header()
-        else:
-            return "Invalid column index."
-
-    def swap_columns(self, col1: int, col2: int) -> str:
-        """
-        Swap two columns in the table.
-        """
-        if 0 <= col1 < len(self.table.columns) and 0 <= col2 < len(self.table.columns):
-            self.table[[col1, col2]] = self.table[[col2, col1]]
-            self.table.columns = list(range(self.table.columns.size))
-            return self.get_table_header()
-        else:
+            return self.get_table_head()
+        except KeyError:
             return "Invalid column indices."
+
+    def insert_empty_columns(self, column_indices: list[int]) -> str:
+        """
+        Insert multiple empty columns into the table.
+        """
+        # Sort indices in descending order to avoid shifting issues
+        sorted_indices = sorted(column_indices, reverse=True)
+
+        valid_indices = True
+        # for idx in sorted_indices:
+        #     if not (0 <= idx <= len(self.table.columns)):
+        #         valid_indices = False
+        #         break
+
+        if valid_indices:
+            # Insert columns starting from the highest index
+            for column_index in sorted_indices:
+                # if index goes over the edge, insert at the end
+                if column_index >= len(self.table.columns):
+                    column_index = len(self.table.columns)
+                self.table.insert(column_index, f"Column {column_index + 1}", "")
+                self.table.columns = list(range(self.table.columns.size))
+
+            # Renumber all columns
+            return self.get_table_head()
+        else:
+            return "One or more invalid column indices provided."
 
 
 if __name__ == "__main__":
@@ -96,7 +143,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    output_dir = Path("display_dir")
+    output_dir = Path("debug/table_corrector_output")
 
     if output_dir.exists():
         for file in output_dir.glob("*"):
@@ -129,26 +176,28 @@ if __name__ == "__main__":
         tables = extract_datatables_from_xml(xml_file)
         tables = remove_overlapping_tables(tables)
 
-        # tables = tables[:1]
-
         for i, table in enumerate(tables):
             print(f"Running correction on table {i}")
-            table.values = correct_table(
-                table.values,
-                [
-                    "betygets nummer",
-                    "de inflyttade personernas namn och ständ",
-                    "mankön",
-                    "qvinnkön",
-                    "pag. i kyrkoboken",
-                    "dageta när betyget inlemnades",
-                ],
+
+            print_type = get_print_type_for_jpg(
+                jpg_path,
+                Path(
+                    "C:/Users/leope/Documents/dev/turku-nlp/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx"
+                ),
             )
+            headers = print_type.table_annotations[0].col_headers
+
+            table.values = correct_table(table.values, headers)
 
             table.values.to_markdown(
-                output_dir / Path(f"corrected_table_{i}.md"),
+                output_dir / Path(f"{i}corrected_table.md"),
                 tablefmt="github",
                 index=False,
             )
-
-    print(dspy.inspect_history(n=1))
+            with open(
+                output_dir / Path(f"{i}_history.txt"), "w", encoding="utf-8"
+            ) as f:
+                orig_stdout = sys.stdout
+                sys.stdout = f
+                dspy.inspect_history(n=8)
+                sys.stdout = orig_stdout

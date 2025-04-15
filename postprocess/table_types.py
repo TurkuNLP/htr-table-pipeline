@@ -32,6 +32,12 @@ class Rect:
         """
         return self.width * self.height
 
+    def get_center(self) -> tuple[int, int]:
+        """
+        Returns the center of the rectangle.
+        """
+        return (self.x + self.width // 2, self.y + self.height // 2)
+
     def absolute(self) -> "Rect":
         """
         Returns the rect with positive width and height.
@@ -67,7 +73,7 @@ class Datatable:
     rect: Rect
     id: str  # ID of the table in the XML
     values: pd.DataFrame  # the table data
-    # coords: pd.DataFrame  # Coordinates of the individual table cells
+    coords: dict[tuple[int, int], Rect]  # Coordinates of the individual table cells
 
 
 @dataclass
@@ -84,7 +90,7 @@ class ParishBook:
         """
         Returns a unique folder id for the parish book. E.g. "ahlainen_muuttaneet_1900-1910_ap"
         """
-        return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.lower()}"
+        return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.split("_")[-1].lower()}"
 
     def get_type_for_opening(self: "ParishBook", opening: int) -> str:
         """

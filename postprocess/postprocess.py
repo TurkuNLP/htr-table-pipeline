@@ -7,7 +7,6 @@ from tqdm import tqdm
 import pandas as pd
 
 from header_gen import generate_header_annotations
-from tables_evaluation import describe_data
 from tables_fix import remove_overlapping_tables
 
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
@@ -253,7 +252,7 @@ def post_process_zip(
                         if col_count != col_count_expected:
                             printed_problem_tables.append((table, book, jpg_path, i))
 
-        debug_output = Path("problem_sample")
+        debug_output = Path("debug/problem_sample")
         if debug_output.exists():
             for file in debug_output.iterdir():
                 file.unlink()

@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    output_dir = Path("display_dir")
+    output_dir = Path("debug/display_dir")
 
     # Empty output dir
     if output_dir.exists():

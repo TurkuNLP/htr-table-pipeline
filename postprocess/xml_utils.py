@@ -69,6 +69,7 @@ def resolve_same_as_cells(df_text: pd.DataFrame, df_type: pd.DataFrame) -> pd.Da
                 "s.",
                 "s",
                 "5",  # A bit questionable to replace these...
+                "5.",
             ]:
                 # Find the first non-"same-as" cell in the same column above
                 for i in range(row_id - 1, -1, -1):
@@ -126,6 +127,7 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
             "empty", index=range(max_row + 1), columns=range(max_col + 1)
         )
         cell_rects: list[tuple[int, int]] = []
+        coords: dict[tuple[int, int], Rect] = {}
 
         # Track row order for validation
         last_row_id = -1
@@ -152,6 +154,8 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
                 raise ValueError(f"Coords not found for cell {cell.attrib.get('id')}")
             coord_points = parse_coords(str(coords_elem.attrib.get("points")))
             cell_rects.extend(coord_points)
+            rect = compute_bounding_rect(coord_points)
+            coords[(row_id, col_id)] = rect
 
             # Get cell type
             custom = cell.attrib.get("custom")
@@ -194,6 +198,6 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         # rect = Rect.from_points(coord_points)
         rect = compute_bounding_rect(cell_rects)
 
-        tables.append(Datatable(rect, table_id, df_text))
+        tables.append(Datatable(rect, table_id, df_text, coords))
 
     return tables

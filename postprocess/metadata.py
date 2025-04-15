@@ -7,6 +7,37 @@ from table_types import ParishBook, TableAnnotation, PrintType
 # Functions for reading metadata from the annotations excel file
 
 
+def get_print_type_str_for_jpg(jpg_file: Path, annotations_file: Path) -> str | None:
+    """
+    Returns the print type for a jpg file from the annotations file. Expensive utility function, do not use in production.
+    """
+    # Get the jpg file name without the extension
+    jpg_file_name = jpg_file.stem.lower()
+    parish = jpg_file_name.split("_")[1]  # e.g. "alaharma"
+    doctype = jpg_file_name.split("_")[2]  # e.g. "muuttaneet"
+    years = jpg_file_name.split("_")[3]  # e.g. "1806-1844"
+    source = jpg_file_name.split("_")[-2]  # e.g. "ulos" or "ap"
+
+    opening = jpg_file_name.split("_")[-1]  # e.g. "13"
+
+    books = get_parish_books_from_annotations(annotations_file)
+
+    for book in books:
+        if book.folder_id() == f"{parish}_{doctype}_{years}_{source}":
+            book_type = book.get_type_for_opening(int(opening))
+            return book_type
+    return None
+
+
+def get_print_type_for_jpg(jpg_file: Path, annotations_file: Path) -> PrintType:
+    print_type = get_print_type_str_for_jpg(jpg_file, annotations_file)
+    print_dict = read_layout_annotations(annotations_file)
+    if print_type is None:
+        raise ValueError(f"No print type found for {jpg_file}.")
+
+    return print_dict[print_type.lower()]
+
+
 def parse_book_type(raw_book_type: str) -> dict[str, tuple[int, int]]:
     """
     Parses the book type from the annotations file.
@@ -38,6 +69,8 @@ def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook
     parish_books = []
     for row in range(2, ws.max_row + 1):  # skip headers but read everything else
         parish_name = ws.cell(row=row, column=1).value
+        if parish_name in ["", None]:
+            break
         raw_book_type = str(ws.cell(row=row, column=19).value)
         years = ws.cell(row=row, column=8).value
         source = ws.cell(row=row, column=9).value

@@ -164,4 +164,3 @@ if __name__ == "__main__":
 
         for i, table in enumerate(tables):
             table.values.to_markdown(Path(f"dspy_test_{i}.md"), index=False)
-    # print(res.reasoning)
