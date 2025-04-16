@@ -74,6 +74,14 @@ class CellData:
     id: str | None
     rect: Rect | None
 
+    def __hash__(self) -> int:
+        return hash(self.text) + hash(self.id)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, CellData):
+            return False
+        return self.text == other.text and self.id == other.id
+
 
 @dataclass
 class Datatable:

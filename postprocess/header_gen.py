@@ -62,7 +62,8 @@ def generate_header_annotations(
     # Get header annotations
     classify = dspy.Predict(AnnotateHeaders)
     res = classify(
-        table=table.values.to_markdown(index=False), number_of_columns=number_of_columns
+        table=table.get_text_df().to_markdown(index=False),
+        number_of_columns=number_of_columns,
     )
     return res.ordered_headers
 
@@ -89,22 +90,20 @@ def generate_header_annotations_multi(
     """
 
     most_common_column_count = max(
-        set([table.values.columns.size for table in tables]),
-        key=[table.values.columns.size for table in tables].count,
+        set([table.data.columns.size for table in tables]),
+        key=[table.data.columns.size for table in tables].count,
     )
 
     column_counts: dict[int, int] = {}
     for table in tables:
-        column_count = table.values.columns.size
+        column_count = table.data.columns.size
         if column_count not in column_counts:
             column_counts[column_count] = 0
         column_counts[column_count] += 1
 
     # Filter tables with the expected column count
     representative_tables = [
-        table
-        for table in tables
-        if table.values.columns.size == most_common_column_count
+        table for table in tables if table.data.columns.size == most_common_column_count
     ]
 
     # Sample tables if we have more than requested
@@ -112,7 +111,9 @@ def generate_header_annotations_multi(
         representative_tables = random.sample(representative_tables, sample_size)
 
     # Truncate tables to the specified number of rows
-    heads = [table.values.head(rows_per_table) for table in representative_tables]
+    heads = [
+        table.get_text_df().head(rows_per_table) for table in representative_tables
+    ]
     table_strings = [table.to_markdown(index=False) for table in heads]
 
     # Get header annotations
@@ -150,17 +151,29 @@ if __name__ == "__main__":
             tables.append(file_tables[0])
 
     # Get header annotations from the updated function
-    Header, sample_tables = generate_header_annotations_multi(tables)
+    headers, sample_tables = generate_header_annotations_multi(tables)
 
-    print(f"Table headers: {Header}")
+    print(f"Table headers: {headers}")
+    output_dir = Path("debug/header_gen_output")
+
+    if output_dir.exists():
+        for file in output_dir.glob("*"):
+            file.unlink()
+        print("Emptying output dir")
+    else:
+        output_dir.mkdir(parents=True)
 
     try:
         for i, table in enumerate(sample_tables):
-            table.values.columns = Header
-            table.values.to_markdown(Path(f"dspy_test_{i}.md"), index=False)
+            table.data.columns = headers
+            table.get_text_df().to_markdown(
+                output_dir / Path(f"dspy_test_{i}.md"), index=False
+            )
     except ValueError as e:
         print(f"Error: {e}")
         print("Headers do not match the number of columns in the table.")
 
         for i, table in enumerate(tables):
-            table.values.to_markdown(Path(f"dspy_test_{i}.md"), index=False)
+            table.get_text_df().to_markdown(
+                output_dir / Path(f"dspy_test_{i}.md"), index=False
+            )

@@ -16,7 +16,7 @@ from cols_fix import (
     match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
-from table_types import Datatable, ParishBook, PrintType, TableAnnotation
+from table_types import CellData, Datatable, ParishBook, PrintType, TableAnnotation
 from utilities.temp_unzip import TempExtractedData
 from xml_utils import extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
@@ -74,31 +74,31 @@ def postprocess_printed(
             else:
                 annotation = print_type.table_annotations[i]
 
-            col_count = len(table.values.columns)
+            col_count = len(table.data.columns)
             col_count_expected = annotation.number_of_columns
 
             if col_count != col_count_expected:
-                table.values = remove_empty_columns_using_name_as_anchor(
-                    table.values,
+                table = remove_empty_columns_using_name_as_anchor(
+                    table,
                     annotation,
                 )
-                col_count = len(table.values.columns)
+                col_count = len(table.data.columns)
 
             if col_count != col_count_expected:
-                table.values = add_columns_using_name_as_anchor(
-                    table.values,
+                table = add_columns_using_name_as_anchor(
+                    table,
                     annotation,
                 )
-                col_count = len(table.values.columns)
+                col_count = len(table.data.columns)
 
             if col_count != col_count_expected:
                 # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
                 # TODO Currently a row of "" is kept so that it's not recognized as a header by other code, should this be so?
-                table.values = match_col_count_for_empty_tables(
-                    table.values,
+                table = match_col_count_for_empty_tables(
+                    table,
                     annotation,
                 )
-                col_count = len(table.values.columns)
+                col_count = len(table.data.columns)
 
         data[jpg_path] = tables
     return data
@@ -246,7 +246,7 @@ def postprocess_zip(
                         else:
                             annotation = print_type.table_annotations[i]
 
-                        col_count = len(table.values.columns)
+                        col_count = len(table.data.columns)
                         col_count_expected = annotation.number_of_columns
 
                         if col_count != col_count_expected:
@@ -285,20 +285,20 @@ def postprocess_zip(
 
             # Set the headers for the table, expanding the columns if needed
             headers = annotation.col_headers
-            if len(headers) < len(table.values.columns):
-                headers += [""] * (len(table.values.columns) - len(headers))
-            while len(headers) > len(table.values.columns):
+            if len(headers) < len(table.data.columns):
+                headers += [""] * (len(table.data.columns) - len(headers))
+            while len(headers) > len(table.data.columns):
                 # Insert empty columns to match the number of headers
-                table.values.insert(
-                    len(table.values.columns),
+                table.data.insert(
+                    len(table.data.columns),
                     "",
-                    [""] * len(table.values.index),
+                    [CellData("", None, None)] * len(table.data.index),
                     allow_duplicates=True,
                 )
 
-            table.values.columns = headers
+            table.data.columns = headers
 
-            table.values.to_excel(
+            table.get_text_df().to_excel(
                 debug_output
                 / Path(f"{book.parish_name};{jpg_path.stem};{table.id}.xlsx"),
             )

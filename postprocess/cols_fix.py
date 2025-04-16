@@ -2,25 +2,26 @@ import unittest
 import pandas as pd
 
 
-from table_types import TableAnnotation
+from table_types import Datatable, TableAnnotation
 
 
 def match_col_count_for_empty_tables(
-    df: pd.DataFrame, annotation: TableAnnotation
-) -> pd.DataFrame:
+    datatable: Datatable, annotation: TableAnnotation
+) -> Datatable:
     """
     For tables with all cells empty ("") corrects the number of columns to match the annotation.
     """
     # Check if everything is empty ("")
-    for col in df.columns:
-        if all(df[col] == ""):
+    text_df = datatable.get_text_df()
+    for col in text_df:
+        if all(text_df[col] == ""):
             continue
         else:
-            return df
+            return datatable
 
     # Check if the number of columns is correct
-    if len(df.columns) == annotation.number_of_columns:
-        return df
+    if len(datatable.data.columns) == annotation.number_of_columns:
+        return datatable
 
     # If the number of columns is not correct, create a new DataFrame with the correct number of columns
     new_df = pd.DataFrame(columns=annotation.col_headers)
@@ -28,7 +29,9 @@ def match_col_count_for_empty_tables(
     # Add a row of "" so that the table doesn't get detected as a header later on
     new_df.loc[0] = [""] * annotation.number_of_columns
 
-    return new_df
+    datatable.data = new_df
+
+    return datatable
 
 
 def compute_col_name_score(col: pd.Series) -> float:
@@ -68,15 +71,15 @@ def get_name_column(df: pd.DataFrame) -> tuple[int | str, float]:
 
 
 def remove_empty_columns_using_name_as_anchor(
-    df: pd.DataFrame, annotation: TableAnnotation, verbose: bool = False
-) -> pd.DataFrame:
+    datatable: Datatable, annotation: TableAnnotation, verbose: bool = False
+) -> Datatable:
     """
     Removes extra empty columns from the sides of the DataFrame using the name column as anchor.
     Only removes columns where all values are "" and only from the sides, never from between
     non-empty columns to preserve the annotation header order.
     """
     # Get the number of columns in the DataFrame
-    num_cols = len(df.columns)
+    num_cols = len(datatable.data.columns)
     num_cols_expected = annotation.number_of_columns
 
     if not num_cols > num_cols_expected:
@@ -85,15 +88,15 @@ def remove_empty_columns_using_name_as_anchor(
             print(
                 f"remove_empty_columns_using_name_as_anchor skipped: {num_cols} <= {num_cols_expected}"
             )
-        return df
+        return datatable
 
     # Identify completely empty columns (all values are "")
     # Should be a list of bools, True if the column is empty
-    empty_cols = df.apply(lambda x: all(x == ""), axis=0).to_list()
+    empty_cols = datatable.data.apply(lambda x: all(x == ""), axis=0).to_list()
 
     # Get approximated name column id
-    name_col, name_certainty_score = get_name_column(df)
-    name_col = int(df.columns.get_loc(name_col))  # type: ignore
+    name_col, name_certainty_score = get_name_column(datatable.get_text_df())
+    name_col = int(datatable.data.columns.get_loc(name_col))  # type: ignore
 
     # Skip if the name column score is too low
     if name_certainty_score < 2.0:
@@ -102,7 +105,7 @@ def remove_empty_columns_using_name_as_anchor(
             print(
                 f"remove_empty_columns_using_name_as_anchor skipped: name column score too low: {name_certainty_score}"
             )
-        return df
+        return datatable
 
     # Get expected name column position
     try:
@@ -113,7 +116,7 @@ def remove_empty_columns_using_name_as_anchor(
             print(
                 f"remove_empty_columns_using_name_as_anchor skipped: name column not found in annotation"
             )
-        return df
+        return datatable
 
     # Calculate how many columns should be removed from the left
     rem_left = max(0, name_col - name_col_expected)
@@ -139,34 +142,34 @@ def remove_empty_columns_using_name_as_anchor(
             break
 
     # Remove the empty columns from the DataFrame
-    df = df.drop(df.columns[cols_to_remove], axis=1)
+    datatable.data = datatable.data.drop(datatable.data.columns[cols_to_remove], axis=1)
 
-    return df
+    return datatable
 
 
 def add_columns_using_name_as_anchor(
-    df: pd.DataFrame, annotation: TableAnnotation
-) -> pd.DataFrame:
+    datatable: Datatable, annotation: TableAnnotation
+) -> Datatable:
     """
     Add columns to the DataFrame's sides using the name column as anchor.
     """
 
     # Get the number of columns in the DataFrame
-    num_cols = len(df.columns)
+    num_cols = len(datatable.data.columns)
     num_cols_expected = annotation.number_of_columns
 
     if not num_cols < num_cols_expected:
         # This fix method is not needed
-        return df
+        return datatable
 
     # Get approximated name column id
-    name_col, _name_certainty_score = get_name_column(df)
-    name_col = int(df.columns.get_loc(name_col))  # type: ignore
+    name_col, _name_certainty_score = get_name_column(datatable.get_text_df())
+    name_col = int(datatable.columns.get_loc(name_col))  # type: ignore
 
     # TODO currently it's just the median length of non-empty strings in the column, transform to a 0-1 range
     if _name_certainty_score < 2.0:
         # Too short/uncertain to anchor to name column
-        return df
+        return datatable
 
     # Get expected name column position
     name_col_expected: int
@@ -174,7 +177,7 @@ def add_columns_using_name_as_anchor(
         name_col_expected = annotation.classified_col_headers.index("name")
     except ValueError:
         # name not found in annotation, this fix is not possible
-        return df
+        return datatable
 
     cols_to_insert_left = []
     cols_to_insert_right = []
@@ -184,38 +187,42 @@ def add_columns_using_name_as_anchor(
     orig_num_cols = num_cols
 
     if name_col > name_col_expected:
-        return df
+        return datatable
 
     i = 0
     while name_col < name_col_expected:
         # Add a new column to the left
         i += 1
         cols_to_insert_left.insert(
-            0, pd.Series([""] * len(df), name=f"fill column {i}")
+            0, pd.Series([""] * len(datatable.data), name=f"fill column {i}")
         )
         col_names.insert(0, f"fill column {i}")
         name_col += 1
 
     # Update num_cols after inserting to the left
-    num_cols = len(df.columns) + len(cols_to_insert_left)
+    num_cols = len(datatable.data.columns) + len(cols_to_insert_left)
     assert name_col == name_col_expected
 
     for i in range(0, max(num_cols_expected - num_cols, 0)):
         # Add a new column to the right
         i += 1
-        cols_to_insert_right.append(pd.Series([""] * len(df), name=f"fill column {i}"))
+        cols_to_insert_right.append(
+            pd.Series([""] * len(datatable.data), name=f"fill column {i}")
+        )
         col_names.append(f"fill column {i}")
 
-    df = pd.concat([*cols_to_insert_left, df, *cols_to_insert_right], axis=1)
+    datatable.data = pd.concat(
+        [*cols_to_insert_left, datatable.data, *cols_to_insert_right], axis=1
+    )
 
-    if len(df.columns) != num_cols_expected:
+    if len(datatable.data.columns) != num_cols_expected:
         # We can assume df that reaches here should always have the correct number of columns
         # Df's where this isn't true should be caught by earlier returns
         raise ValueError(
-            f"Number of columns after adding: {len(df.columns)} != expected: {num_cols_expected}\n\tAdded left: {len(cols_to_insert_left)}, added right: {len(cols_to_insert_right)}\n\tName column: {orig_name_col}, expected: {name_col_expected}\n\tOrig num cols: {orig_num_cols}, expected: {num_cols_expected}",
+            f"Number of columns after adding: {len(datatable.data.columns)} != expected: {num_cols_expected}\n\tAdded left: {len(cols_to_insert_left)}, added right: {len(cols_to_insert_right)}\n\tName column: {orig_name_col}, expected: {name_col_expected}\n\tOrig num cols: {orig_num_cols}, expected: {num_cols_expected}",
         )
 
-    return df
+    return datatable
 
 
 class TestEmptyTableColMatch(unittest.TestCase):
