@@ -35,6 +35,6 @@ if __name__ == "__main__":
         # tables = remove_overlapping_tables(tables)
 
         for i, table in enumerate(tables):
-            table.values.to_markdown(output_dir / Path(f"table_display_{i}.md"))
+            table.get_text_df().to_markdown(output_dir / Path(f"table_display_{i}.md"))
 
     # Usage: python display_xml_table.py --file "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir\output\autods_alaharma_fold_5\images\alaharma\muuttaneet_1806-1844_66628\autods_alaharma_muuttaneet_1806-1844_66628_13.jpg"

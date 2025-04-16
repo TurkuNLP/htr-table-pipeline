@@ -8,6 +8,7 @@ import dspy
 import pandas as pd
 
 from metadata import get_print_type_for_jpg
+from table_types import CellData, Datatable
 from tables_fix import remove_overlapping_tables
 from xml_utils import extract_datatables_from_xml
 
@@ -19,7 +20,7 @@ class HeaderTranslation(dspy.Signature):
     translated_headers: list[str] = dspy.OutputField()
 
 
-def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
+def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     # Translate the headers
     translate = dspy.Predict(HeaderTranslation)
     translated_headers: list[str] = translate(headers=headers).translated_headers  # type: ignore
@@ -31,13 +32,13 @@ def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
     table_mod = TableModification(table, headers, translated_headers)
 
     # Initialize the ReAct agent
-    instructions = """Modify the table so that it best matches the headers. Ensure that the name column (or equivalent) is at the correct position."""
+    instructions = """Modify the table so that it best matches the headers. Ensure that the name column (or equivalent) is at the correct position. The tables are sourced from 1800s Finnish church documents and may contain HTR errors."""
 
     signature = dspy.Signature("table: str, headers: list[str] -> successful: bool", instructions)  # type: ignore
     react = dspy.ReAct(
         signature,
         tools=[
-            table_mod.remove_columns,
+            table_mod.delete_columns,
             table_mod.insert_empty_columns,
             # table_mod.shift_table,
         ],
@@ -50,24 +51,15 @@ def correct_table(table: pd.DataFrame, headers: list[str]) -> pd.DataFrame:
         headers=translated_headers,
     )
 
-    try:
-        # try setting the table's column names to the headers
-        table.columns = headers
-    except ValueError:
-        # if the number of headers does not match the number of columns, print a warning
-        print(
-            f"Warning: The number of headers ({len(headers)}) does not match the number of columns ({len(table.columns)})"
-        )
-
     return table_mod.table
 
 
 class TableModification:
     def __init__(
-        self, table: pd.DataFrame, headers: list[str], translated_headers: list[str]
+        self, table: Datatable, headers: list[str], translated_headers: list[str]
     ) -> None:
-        self.table = table
-        self.table.columns = list(range(self.table.columns.size))
+        self.table: Datatable = table
+        self.table.data.columns = list(range(self.table.data.columns.size))
         self.goal_col_count = len(headers)
         self.translated_headers = translated_headers
 
@@ -78,8 +70,14 @@ class TableModification:
         max_length = 0
         max_col_index = -1
 
-        for col in range(len(self.table.columns)):
-            col_length = self.table[col].astype(str).str.len().max()
+        for col in range(len(self.table.data.columns)):
+            col_length = (
+                self.table.data[col]
+                .map(lambda cell: cell.text)
+                .astype(str)
+                .str.len()
+                .max()
+            )
             if col_length > max_length:
                 max_length = col_length
                 max_col_index = col
@@ -87,22 +85,22 @@ class TableModification:
         return max_col_index
 
     def get_table_head(self) -> str:
-        s = f"Table has {len(self.table.columns)} columns. Should be {self.goal_col_count}.\n\n"
+        s = f"Table has {len(self.table.data.columns)} columns. Should be {self.goal_col_count}.\n\n"
         for i, header in enumerate(self.translated_headers):
             s += f"Index {i} should be '{header}'\n"
         s += "\n"
         s += f"The column with the longest strings (likely the name column) is currently at index {self.get_position_of_col_with_longest_strings()}."
         s += "\n\n"
-        s += self.table.head(8).to_markdown(index=False)
+        s += self.table.get_text_df().head(8).to_markdown(index=False)
         return s
 
-    def remove_columns(self, column_indices: list[int]) -> str:
+    def delete_columns(self, column_indices: list[int]) -> str:
         """
-        Remove the given columns from the table.
+        Delete the given columns from the table. They data is lost permanently.
         """
         try:
-            self.table.drop(column_indices, axis=1, inplace=True)
-            self.table.columns = list(range(self.table.columns.size))
+            self.table.data.drop(column_indices, axis=1, inplace=True)
+            self.table.data.columns = list(range(self.table.data.columns.size))
             return self.get_table_head()
         except KeyError:
             return "Invalid column indices."
@@ -124,10 +122,14 @@ class TableModification:
             # Insert columns starting from the highest index
             for column_index in sorted_indices:
                 # if index goes over the edge, insert at the end
-                if column_index >= len(self.table.columns):
-                    column_index = len(self.table.columns)
-                self.table.insert(column_index, f"Column {column_index + 1}", "")
-                self.table.columns = list(range(self.table.columns.size))
+                if column_index >= len(self.table.data.columns):
+                    column_index = len(self.table.data.columns)
+                self.table.data.insert(
+                    column_index,
+                    f"Column {column_index + 1}",
+                    CellData("", None, None),  # type: ignore
+                )
+                self.table.data.columns = list(range(self.table.data.columns.size))
 
             # Renumber all columns
             return self.get_table_head()
@@ -187,11 +189,10 @@ if __name__ == "__main__":
             )
             headers = print_type.table_annotations[0].col_headers
 
-            table.values = correct_table(table.values, headers)
+            table = correct_table(table, headers)
 
-            table.values.to_markdown(
+            table.get_text_df().to_markdown(
                 output_dir / Path(f"{i}corrected_table.md"),
-                tablefmt="github",
                 index=False,
             )
             with open(

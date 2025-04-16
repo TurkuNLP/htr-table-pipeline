@@ -65,6 +65,17 @@ class Rect:
 
 
 @dataclass
+class CellData:
+    """
+    Represents a cell in the table.
+    """
+
+    text: str
+    id: str | None
+    rect: Rect | None
+
+
+@dataclass
 class Datatable:
     """
     Represents a table
@@ -72,14 +83,17 @@ class Datatable:
 
     rect: Rect
     id: str  # ID of the table in the XML
-    # NOTE VALUES AND IDS SHOULD ALWAYS BE OPERATED TOGETHER
-    # e.g. if you want to remove a column, remove it from both values and ids
-    # this is a quick way to
-    values: pd.DataFrame  # the table data
-    ids: pd.DataFrame  # the table cell ids
-    coords: dict[
-        tuple[int, int], Rect
-    ]  # Coordinates of the individual table cells. These become messed up once the values are modified...
+    data: pd.DataFrame  # DF of CellData
+
+    def get_text_df(self) -> pd.DataFrame:
+        """
+        Returns the text data of the table as a DataFrame.
+        """
+        try:
+            return self.data.map(lambda cell: cell.text)
+        except:
+            print(self.data)
+            raise ValueError("DataFrame does not contain cell data.")
 
 
 @dataclass

@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import pandas as pd
-from table_types import Datatable, Rect
+from table_types import CellData, Datatable, Rect
 
 
 namespace = {"ns": "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
@@ -204,6 +204,21 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         # rect = Rect.from_points(coord_points)
         rect = compute_bounding_rect(cell_rects)
 
-        tables.append(Datatable(rect, table_id, df_text, df_ids, coords))
+        # Create a DataFrame of CellData objects
+        data_df = pd.DataFrame(
+            [
+                [
+                    CellData(
+                        text=str(df_text.iloc[row_id, col_id]),
+                        id=str(df_ids.iloc[row_id, col_id]),
+                        rect=coords[(row_id, col_id)],
+                    )
+                    for col_id in range(df_text.shape[1])
+                ]
+                for row_id in range(df_text.shape[0])
+            ]
+        )
+
+        tables.append(Datatable(rect, table_id, data_df))
 
     return tables
