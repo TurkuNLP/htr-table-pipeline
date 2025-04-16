@@ -72,8 +72,14 @@ class Datatable:
 
     rect: Rect
     id: str  # ID of the table in the XML
+    # NOTE VALUES AND IDS SHOULD ALWAYS BE OPERATED TOGETHER
+    # e.g. if you want to remove a column, remove it from both values and ids
+    # this is a quick way to
     values: pd.DataFrame  # the table data
-    coords: dict[tuple[int, int], Rect]  # Coordinates of the individual table cells
+    ids: pd.DataFrame  # the table cell ids
+    coords: dict[
+        tuple[int, int], Rect
+    ]  # Coordinates of the individual table cells. These become messed up once the values are modified...
 
 
 @dataclass

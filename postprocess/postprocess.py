@@ -132,7 +132,7 @@ def postprocess_handrawn(
     return data
 
 
-def post_process_zip(
+def postprocess_zip(
     zip_path: Path, output_dir: Path, annotations: Path, parishes: list[str] = []
 ) -> None:
     only_extract: Optional[list[str]] = None
@@ -343,7 +343,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    post_process_zip(
+    postprocess_zip(
         Path(args.zip_dir),
         Path(args.output_dir),
         Path(args.annotations),

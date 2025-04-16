@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import dspy
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -57,7 +58,9 @@ if __name__ == "__main__":
         table = pd.read_excel(
             path.with_suffix(".xlsx"), sheet_name="Sheet1", index_col=0
         )
-        annotated_tables.append(Datatable(Rect(0, 0, 0, 0), table_id, table, {}))
+        annotated_tables.append(
+            Datatable(Rect(0, 0, 0, 0), table_id, pd.DataFrame(), table, {})
+        )
 
         # Compute the new tables
         with open(path, encoding="utf-8") as xml_file:

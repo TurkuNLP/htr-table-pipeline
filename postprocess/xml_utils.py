@@ -123,9 +123,11 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
         # Create empty DataFrames with appropriate dimensions
         df_text = pd.DataFrame("", index=range(max_row + 1), columns=range(max_col + 1))
+        df_ids = pd.DataFrame("", index=range(max_row + 1), columns=range(max_col + 1))
         df_type = pd.DataFrame(
             "empty", index=range(max_row + 1), columns=range(max_col + 1)
         )
+
         cell_rects: list[tuple[int, int]] = []
         coords: dict[tuple[int, int], Rect] = {}
 
@@ -147,6 +149,10 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
             # Get cell text
             text = read_text_from_cell(cell)
             df_text.iloc[row_id, col_id] = text
+
+            # Get cell ID
+            cell_id = cell.attrib.get("id")
+            df_ids.iloc[row_id, col_id] = cell_id
 
             # Get cell coordinates
             coords_elem = cell.find(".//ns:Coords", namespace)
@@ -198,6 +204,6 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         # rect = Rect.from_points(coord_points)
         rect = compute_bounding_rect(cell_rects)
 
-        tables.append(Datatable(rect, table_id, df_text, coords))
+        tables.append(Datatable(rect, table_id, df_text, df_ids, coords))
 
     return tables
