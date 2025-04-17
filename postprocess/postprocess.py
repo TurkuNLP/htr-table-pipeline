@@ -4,6 +4,7 @@ import random
 import sys
 from typing import Optional
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 import pandas as pd
 
 from header_gen import generate_header_annotations
@@ -133,12 +134,18 @@ def postprocess_handrawn(
 
 
 def postprocess_zip(
-    zip_path: Path, output_dir: Path, annotations: Path, parishes: list[str] = []
+    zip_path: Path,
+    override_dir: Path | None,
+    annotations: Path,
+    parishes: list[str] = [],
+    rezip_to: Path | None = None,
 ) -> None:
     only_extract: Optional[list[str]] = None
     if parishes:
         only_extract = parishes  # Only extract if this string is in the path
-    with TempExtractedData(zip_path, only_extract=only_extract) as data_dir:
+    with TempExtractedData(
+        zip_path, only_extract=only_extract, rezip_to=rezip_to
+    ) as data_dir:
         # Get the annotations data
         parish_books = get_parish_books_from_annotations(annotations)
         printed_types = read_layout_annotations(annotations)
@@ -165,156 +172,92 @@ def postprocess_zip(
         # TODO expose as cmd arg
         data: dict[ParishBook, dict[str, dict[Path, list[Datatable]]]] = {}
 
-        # Iterate over all unzipped parish directories
+        # Gather all the book dirs
+        book_dirs: list[Path] = []
         for parish_dir in (data_dir / Path("output")).iterdir():  # TODO use the better
             split_name = parish_dir.name.split("_")
             end_i = split_name.index("fold")
             parish = "_".join(split_name[1:end_i])
-            books_dir = rfind_first(parish_dir, parish)
-            if books_dir is None:
+            dir_with_book_dirs = rfind_first(parish_dir, parish)
+            if dir_with_book_dirs is None:
                 raise FileNotFoundError(f"Books directory not found in: {parish_dir}")
 
-            # Iterate over all the books in given parish dir
-            for book_dir in books_dir.iterdir():
-                # pages = pd.DataFrame(columns=["jpg", "tables"])
-                jpg_paths = list(book_dir.rglob("*.jpg"))
+            book_dirs.extend(list(dir_with_book_dirs.iterdir()))
 
-                book: ParishBook = parish_books_mapping[
-                    f"{book_dir.parent.name}_{book_dir.name}"
-                ]
+        # Process the books in parallel
+        process_map_args = [
+            (printed_types, parish_books_mapping, book_dir) for book_dir in book_dirs
+        ]
+        for book, book_data in process_map(
+            postprocess_book_parallel_wrapper, process_map_args
+        ):
+            data[book] = book_data
 
-                # format: dict[print_type, dict[jpeg_path, list[Datatable]]]
-                # print_type has to be included since the same book include multiple formats
-                book_data: dict[str, dict[Path, list[Datatable]]] = {}
 
-                # Iterate over all the jpg files in the book dir
-                for jpg_path in tqdm(
-                    jpg_paths, f"{book_dir.parent.name}_{book_dir.name}"
-                ):
-                    # Grab the final XML file from pageTextClassified/
-                    xml_path = (
-                        jpg_path.parent
-                        / Path("pageTextClassified")
-                        / Path(jpg_path.name).with_suffix(".xml")
-                    )
+def postprocess_book_parallel_wrapper(
+    args: tuple[dict[str, PrintType], dict[str, ParishBook], Path],
+) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
+    return postprocess_book(args[0], args[1], args[2])
 
-                    if not xml_path.exists():
-                        raise FileNotFoundError(
-                            f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
-                        )
 
-                    opening_id = int(jpg_path.stem.split("_")[-1])
+def postprocess_book(
+    printed_types: dict[str, PrintType],
+    parish_books_mapping: dict[str, ParishBook],
+    book_dir: Path,
+) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
+    """
+    Postprocess a single book.
 
-                    tables: list[Datatable]
-                    with open(xml_path, "rt", encoding="utf-8") as xml_file:
-                        tables = extract_datatables_from_xml(xml_file)
+    Arguments:
+    printed_types: dict[str, PrintType] - The print types for the book
+    parish_books_mapping: dict[str, ParishBook] - The mapping of book folder ids to ParishBook objects
+    book_dir: Path - The path to the book directory
 
-                    if not book.get_type_for_opening(opening_id) in book_data.keys():
-                        book_data[book.get_type_for_opening(opening_id)] = {}
-                    book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
+    Returns:
+    tuple[ParishBook, dict[print_type_str, dict[jpeg_path, list[Datatable]]]] - The book and the data for the book
+    """
 
-                # Postprocess the tables based on print type
-                for print_type, type_data in book_data.items():
-                    if "handrawn" in print_type.lower():
-                        type_data = postprocess_handrawn(type_data, book)
-                        book_data[print_type] = type_data
-                    else:
-                        type_data = postprocess_printed(type_data, book, printed_types)
-                        book_data[print_type] = type_data
+    jpg_paths = list(book_dir.rglob("*.jpg"))
 
-                data[book] = book_data
+    book: ParishBook = parish_books_mapping[f"{book_dir.parent.name}_{book_dir.name}"]
 
-        # Collect the tables with the wrong number of columns
-        printed_problem_tables: list[tuple[Datatable, ParishBook, Path, int]] = []
-        for book, book_data in data.items():
-            for print_type_name, type_data in book_data.items():
-                for jpg_path, tables in type_data.items():
-                    for i, table in enumerate(tables):
-                        opening_id = int(jpg_path.stem.split("_")[-1])
+    # format: dict[print_type, dict[jpg_path, list[Datatable]]]
+    # print_type has to be included since the same book can include multiple formats
+    book_data: dict[str, dict[Path, list[Datatable]]] = {}
 
-                        if "handrawn" in print_type_name.lower():
-                            continue
-
-                        print_type = printed_types[
-                            book.get_type_for_opening(opening_id)
-                        ]
-                        annotation: TableAnnotation
-                        # check if i in annotation
-                        if i >= len(print_type.table_annotations):
-                            # print(f"Table {i} not found in annotations")
-                            annotation = print_type.table_annotations[-1]
-                        else:
-                            annotation = print_type.table_annotations[i]
-
-                        col_count = len(table.data.columns)
-                        col_count_expected = annotation.number_of_columns
-
-                        if col_count != col_count_expected:
-                            printed_problem_tables.append((table, book, jpg_path, i))
-
-        debug_output = Path("debug/problem_sample")
-        if debug_output.exists():
-            for file in debug_output.iterdir():
-                file.unlink()
-        else:
-            debug_output.mkdir()
-
-        printed_problem_tables = random.sample(
-            printed_problem_tables, min(100, len(printed_problem_tables))
+    # Iterate over all the jpg files in the book dir
+    for jpg_path in jpg_paths:
+        # Grab the final XML file from pageTextClassified/
+        xml_path = (
+            jpg_path.parent
+            / Path("pageTextClassified")
+            / Path(jpg_path.name).with_suffix(".xml")
         )
 
-        for i, tup in tqdm(
-            enumerate(printed_problem_tables), desc="Writing sample to disk"
-        ):
-
-            table = tup[0]
-            book = tup[1]
-            jpg_path = tup[2]
-            table_id = tup[3]
-
-            opening_id = int(jpg_path.stem.split("_")[-1])
-
-            print_type = printed_types[book.get_type_for_opening(opening_id)]
-            annotation: TableAnnotation
-            # check if i in annotation
-            if i >= len(print_type.table_annotations):
-                # print(f"Table {i} not found in annotations")
-                annotation = print_type.table_annotations[-1]
-            else:
-                annotation = print_type.table_annotations[i]
-
-            # Set the headers for the table, expanding the columns if needed
-            headers = annotation.col_headers
-            if len(headers) < len(table.data.columns):
-                headers += [""] * (len(table.data.columns) - len(headers))
-            while len(headers) > len(table.data.columns):
-                # Insert empty columns to match the number of headers
-                table.data.insert(
-                    len(table.data.columns),
-                    "",
-                    [CellData("", None, None)] * len(table.data.index),
-                    allow_duplicates=True,
-                )
-
-            table.data.columns = headers
-
-            table.get_text_df().to_excel(
-                debug_output
-                / Path(f"{book.parish_name};{jpg_path.stem};{table.id}.xlsx"),
+        if not xml_path.exists():
+            raise FileNotFoundError(
+                f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
             )
 
-            new_jpg = debug_output / Path(
-                f"{book.parish_name};{jpg_path.stem};{table.id}.jpeg"
-            )
-            new_jpg.write_bytes(jpg_path.read_bytes())
+        opening_id = int(jpg_path.stem.split("_")[-1])
 
-            xml_path = (
-                jpg_path.parent / Path("pageTextClassified") / Path(jpg_path.stem)
-            ).with_suffix(".xml")
-            new_xml = debug_output / Path(
-                f"{book.parish_name};{jpg_path.stem};{table.id}.xml"
-            )
-            new_xml.write_bytes(xml_path.read_bytes())
+        tables: list[Datatable]
+        with open(xml_path, "rt", encoding="utf-8") as xml_file:
+            tables = extract_datatables_from_xml(xml_file)
+
+        if not book.get_type_for_opening(opening_id) in book_data.keys():
+            book_data[book.get_type_for_opening(opening_id)] = {}
+        book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
+
+        # Postprocess the tables based on print type
+    for print_type, type_data in book_data.items():
+        if "handrawn" in print_type.lower():
+            type_data = postprocess_handrawn(type_data, book)
+            book_data[print_type] = type_data
+        else:
+            type_data = postprocess_printed(type_data, book, printed_types)
+            book_data[print_type] = type_data
+    return book, book_data
 
 
 if __name__ == "__main__":
@@ -322,18 +265,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--annotations",
         type=str,
-        # required=True,
+        required=True,
         help="The excel file with book and layout annotations, first tab should be books and the second layouts.",
     )
     parser.add_argument(
-        "--zip_dir",
+        "--zip-dir",
         type=str,
+        required=True,
         help="The directory which contains the parish .zip files.",
     )
     parser.add_argument(
-        "--output_dir",
+        "--override-dir",
         type=str,
-        help="Extract statistics and save to a file.",
+        default=None,
+        help="The directory to which the zips will be unzipped to. If not provided, a temporary directory will be created.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="If set, the results will be zipped here.",
     )
     parser.add_argument(
         "--parishes",
@@ -345,9 +296,11 @@ if __name__ == "__main__":
 
     postprocess_zip(
         Path(args.zip_dir),
-        Path(args.output_dir),
+        Path(args.override_dir) if args.override_dir else None,
         Path(args.annotations),
         args.parishes.split(","),
+        Path(args.output_dir) if args.output_dir else None,
     )
 
-    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip_dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --output_dir output --parishes helsinki
+    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
+    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen

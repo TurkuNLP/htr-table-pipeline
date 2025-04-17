@@ -134,6 +134,14 @@ class ParishBook:
 
     def folder_id(self) -> str:
         """
+        Returns a unique folder id for the parish book. E.g. "ahlainen_muuttaneet_1900-1910_ap_sis"
+        """
+        return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.lower()}"
+
+    doctype: str
+
+    def folder_id_source_modded(self) -> str:
+        """
         Returns a unique folder id for the parish book. E.g. "ahlainen_muuttaneet_1900-1910_ap"
         """
         return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.split("_")[-1].lower()}"

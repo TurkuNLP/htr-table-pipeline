@@ -23,7 +23,7 @@ def get_print_type_str_for_jpg(jpg_file: Path, annotations_file: Path) -> str | 
     books = get_parish_books_from_annotations(annotations_file)
 
     for book in books:
-        if book.folder_id() == f"{parish}_{doctype}_{years}_{source}":
+        if book.folder_id_source_modded() == f"{parish}_{doctype}_{years}_{source}":
             book_type = book.get_type_for_opening(int(opening))
             return book_type
     return None

@@ -164,7 +164,7 @@ def add_columns_using_name_as_anchor(
 
     # Get approximated name column id
     name_col, _name_certainty_score = get_name_column(datatable.get_text_df())
-    name_col = int(datatable.columns.get_loc(name_col))  # type: ignore
+    name_col = int(datatable.data.columns.get_loc(name_col))  # type: ignore
 
     # TODO currently it's just the median length of non-empty strings in the column, transform to a 0-1 range
     if _name_certainty_score < 2.0:

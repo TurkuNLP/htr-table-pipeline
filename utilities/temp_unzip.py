@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -11,14 +12,21 @@ from tqdm.contrib.concurrent import process_map
 class TempExtractedData:
     """
     Context manager to make working with zipped data easier. Automatically extracts the zip file (recursively)
-    to a temporary directory and cleans up after exiting scope.
+    to a temporary directory and cleans up after exiting scope. rezip_to can be used to rezip the data to a new location on exit.
 
-    zipfile module is written in Python and very slow but should be fast enough for extracting.
+    Uses zipfile instead of launching subprocesses as zipfile was suprisingly faster on Lustre filesystems.
+    Didn't test on NVMes.
     """
 
-    def __init__(self, zip_dir: Path, only_extract: Optional[list[str]] = None):
+    def __init__(
+        self,
+        zip_dir: Path,
+        only_extract: list[str] | None = None,
+        rezip_to: Path | None = None,
+    ):
         self.zip_dir = zip_dir
         self.only_extract = only_extract
+        self.rezip_to = rezip_to
 
     def __enter__(self) -> Path:
         self.temp_dir = Path(tempfile.mkdtemp())
@@ -71,7 +79,40 @@ class TempExtractedData:
             nested_zip_path = extract_to / file
             self._recursive_unzip(nested_zip_path, extract_to)
 
+    def _zip_directory(self, args: tuple[Path, Path]):
+        """
+        Zips the contents of an entire folder (with that folder included
+        in the archive itself).
+        """
+        folder_path, zip_path = args
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipfile_obj:
+            root_len = len(str(folder_path.resolve()))
+
+            for root, _, files in os.walk(folder_path):
+                root = Path(root)
+                archive_root = str(root.resolve())[root_len:]
+
+                for file in files:
+                    filepath = root / file
+                    archive_name = os.path.join(archive_root, file)
+                    zipfile_obj.write(str(filepath), archive_name)
+
     def __exit__(self, exc_type, exc_value, traceback):
-        print(f"\nStarting to delete directory: {self.temp_dir}")
+        print()
+        if self.rezip_to:
+            print("Starting to zip directory:")
+            zip_dir_parallel_args = [
+                (self.temp_dir / file, self.rezip_to / file.name)
+                for file in self.temp_dir.iterdir()
+            ]
+            process_map(
+                self._zip_directory,
+                zip_dir_parallel_args,
+                desc="Rezipping parish data",
+                unit="file",
+            )
+            print(f"Zipped data to: {self.rezip_to}")
+        print(f"Starting to delete directory: {self.temp_dir}")
         shutil.rmtree(self.temp_dir)
-        print(f"\nDeleted temporary directory: {self.temp_dir}")
+        print(f"Deleted temporary directory: {self.temp_dir}")

@@ -1,11 +1,7 @@
 from io import TextIOWrapper
 from pathlib import Path
-import re
-from typing import Optional
-import unittest
 import xml.etree.ElementTree as ET
 
-import numpy as np
 import pandas as pd
 from table_types import CellData, Datatable, Rect
 
@@ -287,7 +283,6 @@ def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> Non
 
     source_dir = book_path / "pageTextClassified"
     output_dir = book_path / "pagePostprocessed"
-
     if source_dir.exists():
         # empty the dir... used for testing but in prod shouldn't ever happen
         for file in source_dir.iterdir():
