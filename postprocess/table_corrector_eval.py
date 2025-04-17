@@ -58,9 +58,7 @@ if __name__ == "__main__":
         table = pd.read_excel(
             path.with_suffix(".xlsx"), sheet_name="Sheet1", index_col=0
         )
-        annotated_tables.append(
-            Datatable(Rect(0, 0, 0, 0), table_id, pd.DataFrame(), table, {})
-        )
+        annotated_tables.append(Datatable(Rect(0, 0, 0, 0), path.name, table_id, table))
 
         # Compute the new tables
         with open(path, encoding="utf-8") as xml_file:
@@ -79,16 +77,16 @@ if __name__ == "__main__":
     for i, table in enumerate(annotated_tables):
         # Remove unnamed columns
         cols_to_remove = []
-        for col in table.values.columns:
+        for col in table.data.columns:
             if col.startswith("Unnamed"):
                 cols_to_remove.append(col)
 
-        table.values.drop(columns=cols_to_remove, inplace=True)
+        table.data.drop(columns=cols_to_remove, inplace=True)
 
     # Print the similarities
     similarity_scores = []
     for i, table in enumerate(computed_tables):
-        similarity = compute_df_similarity(table.values, annotated_tables[i].values)
+        similarity = compute_df_similarity(table.data, annotated_tables[i].data)
         similarity_scores.append(similarity)
         # print(f"{table.id} similarity: {similarity:.2f}")
 
@@ -98,14 +96,14 @@ if __name__ == "__main__":
 
     # Run the corrector agent
     for i, table in tqdm(enumerate(computed_tables), desc="Correcting tables"):
-        computed_tables[i].values = correct_table(
-            table.values, annotated_tables[i].values.columns.to_list()
+        computed_tables[i] = correct_table(
+            table, annotated_tables[i].data.columns.to_list()
         )
 
     # Print the similarities
     similarity_scores = []
     for i, table in enumerate(computed_tables):
-        similarity = compute_df_similarity(table.values, annotated_tables[i].values)
+        similarity = compute_df_similarity(table.data, annotated_tables[i].data)
         similarity_scores.append(similarity)
         # print(f"{table.id} similarity: {similarity:.2f}")
 
@@ -118,19 +116,19 @@ if __name__ == "__main__":
     output_dir.mkdir(exist_ok=True)
     for i, table in enumerate(computed_tables):
         # Set the headers for the table, expanding the columns if needed
-        headers = annotated_tables[i].values.columns.to_list()
-        if len(headers) < len(table.values.columns):
-            headers += [""] * (len(table.values.columns) - len(headers))
-        while len(headers) > len(table.values.columns):
+        headers = annotated_tables[i].data.columns.to_list()
+        if len(headers) < len(table.data.columns):
+            headers += [""] * (len(table.data.columns) - len(headers))
+        while len(headers) > len(table.data.columns):
             # Insert empty columns to match the number of headers
-            table.values.insert(
-                len(table.values.columns),
+            table.data.insert(
+                len(table.data.columns),
                 "",
-                [""] * len(table.values.index),
+                [""] * len(table.data.index),
                 allow_duplicates=True,
             )
 
-        table.values.columns = headers
-        table.values.to_markdown(
+        table.data.columns = headers
+        table.data.to_markdown(
             output_dir / Path(f"corrected_{table.id}.md"), index=False
         )

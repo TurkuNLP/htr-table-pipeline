@@ -63,6 +63,23 @@ class Rect:
         else:
             return None
 
+    def get_points(self) -> list[tuple[int, int]]:
+        """
+        Returns the points of the rectangle.
+        """
+        return [
+            (self.x, self.y),
+            (self.x + self.width, self.y),
+            (self.x + self.width, self.y + self.height),
+            (self.x, self.y + self.height),
+        ]
+
+    def get_coords_str(self) -> str:
+        """
+        Returns the points formatted as 0,0 0,0 0,0 0,0
+        """
+        return " ".join([f"{point[0]},{point[1]}" for point in self.get_points()])
+
 
 @dataclass
 class CellData:
@@ -90,6 +107,7 @@ class Datatable:
     """
 
     rect: Rect
+    filename: str
     id: str  # ID of the table in the XML
     data: pd.DataFrame  # DF of CellData
 
