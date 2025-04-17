@@ -5,6 +5,7 @@ from typing import Optional
 import zipfile
 
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 
 class TempExtractedData:
@@ -40,9 +41,22 @@ class TempExtractedData:
             # Filter zip files to only those that contain the specified string in their name
             zip_files = [z for z in zip_files if any(s in z.name for s in only_extract)]
 
-        for zip_file in tqdm(zip_files, desc="Unzipping parish data", unit="file"):
-            with zipfile.ZipFile(zip_file, "r") as z:
-                z.extractall(extract_to)
+        zips_and_dest = [(zip_file, extract_to) for zip_file in zip_files]
+
+        process_map(
+            self._unzip,
+            zips_and_dest,
+            desc="Unzipping parish data",
+            unit="file",
+        )
+
+    def _unzip(self, zips_and_dest: tuple[Path, Path]):
+        """
+        Unzip a zip file to the specified destination.
+        """
+        source_zip, dest = zips_and_dest
+        with zipfile.ZipFile(source_zip, "r") as z:
+            z.extractall(dest)
 
     def _recursive_unzip(self, zip_path: Path, extract_to: Path):
         # Not currently needed, but can be used to recursively unzip nested zip files.
@@ -58,5 +72,6 @@ class TempExtractedData:
             self._recursive_unzip(nested_zip_path, extract_to)
 
     def __exit__(self, exc_type, exc_value, traceback):
+        print(f"\nStarting to delete directory: {self.temp_dir}")
         shutil.rmtree(self.temp_dir)
         print(f"\nDeleted temporary directory: {self.temp_dir}")
