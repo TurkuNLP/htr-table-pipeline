@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -5,19 +6,27 @@ from typing import Optional
 import zipfile
 
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 
 class TempExtractedData:
     """
     Context manager to make working with zipped data easier. Automatically extracts the zip file (recursively)
-    to a temporary directory and cleans up after exiting scope.
+    to a temporary directory and cleans up after exiting scope. rezip_to can be used to rezip the data to a new location on exit.
 
-    zipfile module is written in Python and very slow but should be fast enough for extracting.
+    Uses zipfile instead of launching subprocesses as zipfile was suprisingly faster on Lustre filesystems.
+    Didn't test on NVMes.
     """
 
-    def __init__(self, zip_dir: Path, only_extract: Optional[list[str]] = None):
+    def __init__(
+        self,
+        zip_dir: Path,
+        only_extract: list[str] | None = None,
+        rezip_to: Path | None = None,
+    ):
         self.zip_dir = zip_dir
         self.only_extract = only_extract
+        self.rezip_to = rezip_to
 
     def __enter__(self) -> Path:
         self.temp_dir = Path(tempfile.mkdtemp())
@@ -40,9 +49,22 @@ class TempExtractedData:
             # Filter zip files to only those that contain the specified string in their name
             zip_files = [z for z in zip_files if any(s in z.name for s in only_extract)]
 
-        for zip_file in tqdm(zip_files, desc="Unzipping parish data", unit="file"):
-            with zipfile.ZipFile(zip_file, "r") as z:
-                z.extractall(extract_to)
+        zips_and_dest = [(zip_file, extract_to) for zip_file in zip_files]
+
+        process_map(
+            self._unzip,
+            zips_and_dest,
+            desc="Unzipping parish data",
+            unit="file",
+        )
+
+    def _unzip(self, zips_and_dest: tuple[Path, Path]):
+        """
+        Unzip a zip file to the specified destination.
+        """
+        source_zip, dest = zips_and_dest
+        with zipfile.ZipFile(source_zip, "r") as z:
+            z.extractall(dest)
 
     def _recursive_unzip(self, zip_path: Path, extract_to: Path):
         # Not currently needed, but can be used to recursively unzip nested zip files.
@@ -57,6 +79,43 @@ class TempExtractedData:
             nested_zip_path = extract_to / file
             self._recursive_unzip(nested_zip_path, extract_to)
 
+    def _zip_wrapper(self, args: tuple[Path, Path]) -> None:
+        """
+        Wrapper function to zip a directory. This is used for parallel processing.
+        """
+        dir_path, zip_path = args
+        self._zip(dir_path, zip_path)
+
+    def _zip(self, path_to_directory: Path, path_to_archive: Path):
+        """Zips a directory recursively including the top-level directory using pathlib and zipfile.
+
+        Args:
+            path_to_directory: The directory to zip.
+            path_to_archive: The path to the output zip file.
+        """
+        with zipfile.ZipFile(path_to_archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for file_path in path_to_directory.rglob("*"):
+                if file_path.is_file():
+                    arcname = Path(path_to_directory.name) / file_path.relative_to(
+                        path_to_directory
+                    )
+                    zip_file.write(file_path, arcname)
+
     def __exit__(self, exc_type, exc_value, traceback):
+        print()
+        if self.rezip_to:
+            print("Starting to zip directory:")
+            zip_dir_parallel_args = [
+                (self.temp_dir / file, self.rezip_to / file.name)
+                for file in self.temp_dir.iterdir()
+            ]
+            process_map(
+                self._zip_wrapper,
+                zip_dir_parallel_args,
+                desc="Rezipping parish data",
+                unit="file",
+            )
+            print(f"Zipped data to: {self.rezip_to}")
+        print(f"Starting to delete directory: {self.temp_dir}")
         shutil.rmtree(self.temp_dir)
-        print(f"\nDeleted temporary directory: {self.temp_dir}")
+        print(f"Deleted temporary directory: {self.temp_dir}")

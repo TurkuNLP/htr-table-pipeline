@@ -1,10 +1,62 @@
 from pathlib import Path
 import openpyxl
 
-from table_types import ParishBook, PrintTableAnnotation, PrintType
+from table_types import ParishBook, TableAnnotation, PrintType
 
 
 # Functions for reading metadata from the annotations excel file
+
+
+def get_print_type_str_for_jpg(jpg_file: Path, annotations_file: Path) -> str | None:
+    """
+    Returns the print type for a jpg file from the annotations file. Expensive utility function, do not use in production.
+    """
+    # Get the jpg file name without the extension
+    jpg_file_name = jpg_file.stem.lower()
+    parish = jpg_file_name.split("_")[1]  # e.g. "alaharma"
+    doctype = jpg_file_name.split("_")[2]  # e.g. "muuttaneet"
+    years = jpg_file_name.split("_")[3]  # e.g. "1806-1844"
+    source = jpg_file_name.split("_")[-2]  # e.g. "ulos" or "ap"
+
+    opening = jpg_file_name.split("_")[-1]  # e.g. "13"
+
+    books = get_parish_books_from_annotations(annotations_file)
+
+    for book in books:
+        if book.folder_id_source_modded() == f"{parish}_{doctype}_{years}_{source}":
+            book_type = book.get_type_for_opening(int(opening))
+            return book_type
+    return None
+
+
+def get_print_type_for_jpg(jpg_file: Path, annotations_file: Path) -> PrintType:
+    print_type = get_print_type_str_for_jpg(jpg_file, annotations_file)
+    print_dict = read_layout_annotations(annotations_file)
+    if print_type is None:
+        raise ValueError(f"No print type found for {jpg_file}.")
+
+    return print_dict[print_type.lower()]
+
+
+def parse_book_type(raw_book_type: str) -> dict[str, tuple[int, int]]:
+    """
+    Parses the book type from the annotations file.
+
+    E.g. Print 21:1-50, print 22:50-661 -> {"Print 21": (1, 50), "Print 22": (50, 661)}
+    """
+    book_type = {}
+    for book in raw_book_type.split(","):
+        book = book.strip()
+        if ":" in book:
+            name, years = book.split(":")
+            years = years.split("-")
+            start = int(years[0])
+            end = int(years[1])
+            book_type[name.strip().lower()] = (start, end)
+        else:
+            name = book
+            book_type[name.strip().lower()] = (0, 999999)
+    return book_type
 
 
 def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook]:
@@ -17,13 +69,15 @@ def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook
     parish_books = []
     for row in range(2, ws.max_row + 1):  # skip headers but read everything else
         parish_name = ws.cell(row=row, column=1).value
-        book_type = ws.cell(row=row, column=19).value
+        if parish_name in ["", None]:
+            break
+        raw_book_type = str(ws.cell(row=row, column=19).value)
         years = ws.cell(row=row, column=8).value
         source = ws.cell(row=row, column=9).value
         doctype = ws.cell(row=row, column=17).value
         book = ParishBook(
             str(parish_name),
-            str(book_type).lower(),
+            parse_book_type(raw_book_type),
             str(years),
             str(source).lower(),
             str(doctype).lower(),
@@ -38,7 +92,7 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
     ws = wb.worksheets[1]  # second sheet
     types: dict[str, PrintType] = {}
     for row in range(2, ws.max_row + 1):  # skip headers but read everything else
-        print_type = str(ws.cell(row=row, column=1).value)
+        print_type = str(ws.cell(row=row, column=1).value).lower()
         # table_type is either "one table" or "two tables" or None
         table_type: str | None = ws.cell(row=row, column=2).value  # type: ignore
         if table_type is None:
@@ -68,10 +122,9 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
                 name=print_type,
                 tables_per_jpg="one table",
                 table_annotations=[
-                    PrintTableAnnotation(
+                    TableAnnotation(
                         print_type=print_type,
                         direction=direction,
-                        number_of_columns=number_of_columns,
                         col_headers=headers,
                         page="opening",
                     )
@@ -89,10 +142,9 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
             if isinstance(column_header, str):
                 column_header = column_header.strip()
             left_headers.append(column_header)
-        left_table = PrintTableAnnotation(
+        left_table = TableAnnotation(
             print_type=print_type,
             direction=direction,
-            number_of_columns=number_of_columns,
             col_headers=left_headers,
             page="left",
         )
@@ -120,10 +172,9 @@ def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
                 column_header = column_header.strip()
             right_headers.append(column_header)
 
-        right_table = PrintTableAnnotation(
+        right_table = TableAnnotation(
             print_type=print_type,
             direction=direction,
-            number_of_columns=number_of_columns,
             col_headers=right_headers,
             page="right",
         )

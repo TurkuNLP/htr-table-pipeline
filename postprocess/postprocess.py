@@ -1,74 +1,27 @@
 import argparse
-import inspect
 import os
 from pathlib import Path
-from pprint import pprint
 import sys
 from typing import Optional
-import openpyxl
-from tqdm import tqdm
-import pandas as pd
+from dotenv import load_dotenv
+import dspy
+from tqdm.contrib.concurrent import process_map
+
+from header_gen import generate_header_annotations
+from table_corrector_agent import correct_table
+from tables_fix import remove_overlapping_tables
 
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
 
 from cols_fix import (
     add_columns_using_name_as_anchor,
+    match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
-from table_types import Datatable, ParishBook, PrintTableAnnotation, PrintType
+from table_types import Datatable, ParishBook, PrintType, TableAnnotation
 from utilities.temp_unzip import TempExtractedData
 from xml_utils import extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
-from eval import calculate_evaluation_statistics
-
-
-def remove_operlapping_tables(tables: list[Datatable]) -> list[Datatable]:
-    """
-    Remove overlapping tables by keeping the larger one when significant overlap is detected.
-
-    Args:
-        tables: List of Datatable objects
-
-    Returns:
-        Filtered list of Datatable objects with overlapping tables removed
-    """
-    if not tables or len(tables) <= 1:
-        return tables
-
-    # Sort tables by area in descending order (largest first)
-    sorted_tables = sorted(tables, key=lambda t: t.rect.get_area(), reverse=True)
-
-    # Tables to keep after filtering
-    filtered_tables = []
-    removed_indices = set()
-
-    for i, table in enumerate(sorted_tables):
-        if i in removed_indices:
-            continue
-
-        filtered_tables.append(table)
-
-        # Compare with all smaller tables
-        for j in range(i + 1, len(sorted_tables)):
-            if j in removed_indices:
-                continue
-
-            smaller_table = sorted_tables[j]
-
-            # Check overlap
-            overlap_rect = table.rect.get_overlap_rect(smaller_table.rect)
-
-            if overlap_rect:
-                # Calculate overlap percentage relative to the smaller table
-                overlap_area = overlap_rect.get_area()
-                smaller_area = smaller_table.rect.get_area()
-                overlap_percentage = overlap_area / smaller_area
-
-                # If over 90% of the smaller table overlaps with the larger one, remove it
-                if overlap_percentage > 0.9:
-                    removed_indices.add(j)
-
-    return filtered_tables
 
 
 def rfind_first(path: Path, find: str) -> Optional[Path]:
@@ -90,32 +43,130 @@ def rfind_first(path: Path, find: str) -> Optional[Path]:
     return None
 
 
-def post_process_zip(
-    zip_path: Path, output_dir: Path, annotations: Path, parishes: list[str] = []
+def postprocess_printed(
+    data: dict[Path, list[Datatable]],
+    book: ParishBook,
+    print_types: dict[str, PrintType],
+    model: str,
+    llm_url: str,
+) -> dict[Path, list[Datatable]]:
+    """
+    Postprocess tables for printed books.
+
+    The aim of the printed postprocessing is to have the correct number of tables with the right data in the right columns as defined in the print annotations.
+    """
+    for jpg_path, tables in data.items():
+        opening_id = int(jpg_path.stem.split("_")[-1])
+        table_count = len(tables)
+        table_count_expected = print_types[
+            book.get_type_for_opening(opening_id)
+        ].table_count
+
+        # Remove extra tables
+        if table_count > table_count_expected:
+            tables = remove_overlapping_tables(tables)
+            table_count = len(tables)  # Update table count after filtering
+
+        for i, table in enumerate(tables):
+            print_type = print_types[book.get_type_for_opening(opening_id)]
+            annotation: TableAnnotation
+            # check if i in annotation
+            if i >= len(print_type.table_annotations):
+                # print(f"Table {i} not found in annotations")
+                annotation = print_type.table_annotations[-1]
+            else:
+                annotation = print_type.table_annotations[i]
+
+            col_count = len(table.data.columns)
+            col_count_expected = annotation.number_of_columns
+
+            if col_count != col_count_expected:
+                table = remove_empty_columns_using_name_as_anchor(
+                    table,
+                    annotation,
+                )
+                col_count = len(table.data.columns)
+
+            if dspy.settings.get("lm") and col_count != col_count_expected:
+                table = correct_table(
+                    table,
+                    annotation.col_headers,
+                )
+                col_count = len(table.data.columns)
+
+            if col_count != col_count_expected:
+                # Last resort.
+                table = add_columns_using_name_as_anchor(
+                    table,
+                    annotation,
+                )
+                col_count = len(table.data.columns)
+
+            if col_count != col_count_expected:
+                # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
+                # TODO Currently a row of "" is kept so that it's not recognized as a header by other code, should this be so?
+                table = match_col_count_for_empty_tables(
+                    table,
+                    annotation,
+                )
+                col_count = len(table.data.columns)
+
+        data[jpg_path] = tables
+    return data
+
+
+def postprocess_handrawn(
+    data: dict[Path, list[Datatable]],
+    book: ParishBook,
+    model: str,
+    llm_url: str,
+) -> dict[Path, list[Datatable]]:
+    """
+    Postprocess tables for handrawn books.
+
+    The aim is to figure out what data is stored in whatever columns
+    """
+    for jpg_path, tables in data.items():
+        opening_id = int(jpg_path.stem.split("_")[-1])
+        table_count = len(tables)
+
+        # Remove extra tables
+        tables = remove_overlapping_tables(tables)
+        table_count = len(tables)
+
+        if model:
+            for i, table in enumerate(tables):
+                headers = generate_header_annotations(table, table.data.columns.size)
+                if len(headers) == table.data.columns.size:
+                    table.data.columns = headers
+
+        data[jpg_path] = tables
+    return data
+
+
+def postprocess(
+    model: str,
+    llm_url: str,
+    zip_path: Path,
+    override_dir: Path | None,
+    annotations: Path,
+    parishes: list[str] = [],
+    rezip_to: Path | None = None,
+    skip_llm: bool = False,
 ) -> None:
     only_extract: Optional[list[str]] = None
     if parishes:
         only_extract = parishes  # Only extract if this string is in the path
-    with TempExtractedData(zip_path, only_extract=only_extract) as data_dir:
+    with TempExtractedData(
+        zip_path, only_extract=only_extract, rezip_to=rezip_to
+    ) as data_dir:
         # Get the annotations data
         parish_books = get_parish_books_from_annotations(annotations)
-        print_types = read_layout_annotations(annotations)
+        printed_types = read_layout_annotations(annotations)
 
         parish_books_mapping: dict[str, ParishBook] = {}  # book_folder_id -> ParishBook
         for book in parish_books:
             parish_books_mapping[book.folder_id()] = book
-
-        problem_tables: list[tuple[pd.DataFrame, ParishBook, str]] = []
-        evaluation_matrix = pd.DataFrame(
-            columns=[
-                "jpg",
-                "table_id",
-                "tables_expected",
-                "tables_actual",
-                "cols_expected",
-                "cols_actual",
-            ]
-        )
 
         # Find first dir with multiple files within
         def find_first_dir_with_multiple_files(path: Path) -> Path:
@@ -128,115 +179,124 @@ def post_process_zip(
                         return result
             return path
 
-        # Iterate over all parish directories in given zip
+        # Initialize LM
+
+        env_file = Path(__file__).parent.parent / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+
+        if model != "":
+            lm = dspy.LM(
+                model,
+                api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
+                api_base=llm_url,
+            )
+
+            dspy.configure(lm=lm)
+
+        # Collects ALL the table data... May cause issues with RAM usage on full run
+        # It's used for the evaluation stats and those aren't necessarily needed for the full run
+        # Or are they...?
+        # Anyways a quick estimate for all the dataframes in memory is around 10gb for the full dataset
+        # TODO expose as cmd arg
+        data: dict[ParishBook, dict[str, dict[Path, list[Datatable]]]] = {}
+
+        # Gather all the book dirs
+        book_dirs: list[Path] = []
         for parish_dir in (data_dir / Path("output")).iterdir():  # TODO use the better
             split_name = parish_dir.name.split("_")
             end_i = split_name.index("fold")
             parish = "_".join(split_name[1:end_i])
-            books_dir = rfind_first(parish_dir, parish)
-            if books_dir is None:
+            dir_with_book_dirs = rfind_first(parish_dir, parish)
+            if dir_with_book_dirs is None:
                 raise FileNotFoundError(f"Books directory not found in: {parish_dir}")
-            for book_dir in books_dir.iterdir():
-                # pages = pd.DataFrame(columns=["jpg", "tables"])
-                jpg_paths = list(book_dir.rglob("*.jpg"))
 
-                book: ParishBook = parish_books_mapping[
-                    f"{book_dir.parent.name}_{book_dir.name}"
-                ]
+            book_dirs.extend(list(dir_with_book_dirs.iterdir()))
 
-                # Skip handdrawn ones for now
-                if "handdrawn" in book.book_type or "handrawn" in book.book_type:
-                    print(f"Skipping handdrawn book: {book.folder_id()}")
-                    continue
+        # Process the books in parallel
+        process_map_args = [
+            (printed_types, parish_books_mapping, book_dir) for book_dir in book_dirs
+        ]
+        for book, book_data in process_map(
+            postprocess_book_parallel_wrapper, process_map_args
+        ):
+            data[book] = book_data
 
-                for jpg_path in tqdm(
-                    jpg_paths, f"{book_dir.parent.name}_{book_dir.name}"
-                ):
-                    # Grab the final XML file from pageTextClassified/
-                    xml_path = (
-                        jpg_path.parent
-                        / Path("pageTextClassified")
-                        / Path(jpg_path.name).with_suffix(".xml")
-                    )
 
-                    if not xml_path.exists():
-                        raise FileNotFoundError(
-                            f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
-                        )
+def postprocess_book_parallel_wrapper(
+    args: tuple[
+        dict[str, PrintType],  # print_type_str -> PrintType
+        dict[str, ParishBook],  # book_folder_id -> ParishBook
+        Path,  # book_dir
+        str,  # model
+        str,  # llm_url
+    ],
+) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
+    return postprocess_book(args[0], args[1], args[2], args[3], args[4])
 
-                    tables: list[Datatable]
-                    with open(xml_path, "rt", encoding="utf-8") as xml_file:
-                        tables = extract_datatables_from_xml(xml_file)
 
-                    table_count = len(tables)
-                    table_count_expected = print_types[book.book_type].table_count
+def postprocess_book(
+    printed_types: dict[str, PrintType],
+    parish_books_mapping: dict[str, ParishBook],
+    book_dir: Path,
+    model: str,
+    llm_url: str,
+) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
+    """
+    Postprocess a single book.
 
-                    # Remove extra tables
-                    if table_count > table_count_expected:
-                        tables = remove_operlapping_tables(tables)
-                        table_count = len(tables)  # Update table count after filtering
+    Arguments:
+    printed_types: dict[str, PrintType] - The print types for the book
+    parish_books_mapping: dict[str, ParishBook] - The mapping of book folder ids to ParishBook objects
+    book_dir: Path - The path to the book directory
 
-                    # Update evaluation_matrix
-                    for i, table in enumerate(tables):
-                        col_count = len(table.table.columns)
-                        col_count_expected = (
-                            (
-                                print_types[book.book_type]
-                                .table_annotations[i]
-                                .number_of_columns
-                            )
-                            if print_types[book.book_type].table_count == table_count
-                            else None
-                        )
+    Returns:
+    tuple[ParishBook, dict[print_type_str, dict[jpeg_path, list[Datatable]]]] - The book and the data for the book
+    """
 
-                        if col_count != col_count_expected:
-                            table.table = remove_empty_columns_using_name_as_anchor(
-                                table.table,
-                                print_types[book.book_type].table_annotations[i],
-                            )
-                            table.table = add_columns_using_name_as_anchor(
-                                table.table,
-                                print_types[book.book_type].table_annotations[i],
-                            )
-                            col_count = len(table.table.columns)
+    jpg_paths = list(book_dir.rglob("*.jpg"))
 
-                        if col_count != col_count_expected:
-                            problem_tables.append((table.table, book, jpg_path.name))
+    book: ParishBook = parish_books_mapping[f"{book_dir.parent.name}_{book_dir.name}"]
 
-                        evaluation_matrix.loc[len(evaluation_matrix)] = [
-                            jpg_path.name,
-                            i,
-                            table_count_expected,
-                            table_count,
-                            col_count_expected,
-                            col_count,
-                        ]
-        # Calculate and display evaluation statistics
-        _, _ = calculate_evaluation_statistics(evaluation_matrix)
+    # format: dict[print_type, dict[jpg_path, list[Datatable]]]
+    # print_type has to be included since the same book can include multiple formats
+    book_data: dict[str, dict[Path, list[Datatable]]] = {}
 
-        print(f"problem tables size: {len(problem_tables)}")
-        for i, prob in tqdm(enumerate(problem_tables), desc="Problem tables"):
+    # Iterate over all the jpg files in the book dir
+    for jpg_path in jpg_paths:
+        # Grab the final XML file from pageTextClassified/
+        xml_path = (
+            jpg_path.parent
+            / Path("pageTextClassified")
+            / Path(jpg_path.name).with_suffix(".xml")
+        )
 
-            table = problem_tables[i][0]
-            book = problem_tables[i][1]
-            jpg_path = problem_tables[i][2]
+        if not xml_path.exists():
+            raise FileNotFoundError(
+                f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
+            )
 
-            # Add top row to table with book name and print type
-            row_to_insert = [
-                book.book_type,
-                jpg_path,
-            ]
-            # Make sure that the row is the same length as the table
-            row_to_insert += [""] * (len(table.columns) - len(row_to_insert))
-            table.loc[-1] = row_to_insert
-            # Shift index and sort to make the new row the first row
-            table.index = table.index + 1
-            table = table.sort_index()
+        opening_id = int(jpg_path.stem.split("_")[-1])
 
-            table.to_markdown(Path("debug_output") / f"problem_table_{i}.md")
+        tables: list[Datatable]
+        with open(xml_path, "rt", encoding="utf-8") as xml_file:
+            tables = extract_datatables_from_xml(xml_file)
 
-        print("\n\n", problem_tables[1][1])
-        print("\n\n", problem_tables[1][0])
+        if not book.get_type_for_opening(opening_id) in book_data.keys():
+            book_data[book.get_type_for_opening(opening_id)] = {}
+        book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
+
+        # Postprocess the tables based on print type
+    for print_type, type_data in book_data.items():
+        if "handrawn" in print_type.lower():
+            type_data = postprocess_handrawn(type_data, book, model, llm_url)
+            book_data[print_type] = type_data
+        else:
+            type_data = postprocess_printed(
+                type_data, book, printed_types, model, llm_url
+            )
+            book_data[print_type] = type_data
+    return book, book_data
 
 
 if __name__ == "__main__":
@@ -244,18 +304,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--annotations",
         type=str,
-        # required=True,
+        required=True,
         help="The excel file with book and layout annotations, first tab should be books and the second layouts.",
     )
     parser.add_argument(
-        "--zip_dir",
+        "--zip-dir",
         type=str,
+        required=True,
         help="The directory which contains the parish .zip files.",
     )
     parser.add_argument(
-        "--output_dir",
+        "--working-dir",
         type=str,
-        help="Extract statistics and save to a file.",
+        default=None,
+        help="The directory to which the zips will be unzipped to. If not provided, a temporary directory will be created.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="If set, the results will be zipped here.",
     )
     parser.add_argument(
         "--parishes",
@@ -263,13 +331,33 @@ if __name__ == "__main__":
         default="",
         help="Comma-separated list of parishes to process.",
     )
-    args = parser.parse_args()
 
-    post_process_zip(
-        Path(args.zip_dir),
-        Path(args.output_dir),
-        Path(args.annotations),
-        args.parishes.split(","),
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="openai/gemini-2.0-flash",
+        help="The model to use for the LLM. If empty, all llm-requiring steps will be skipped.",
+    )
+    parser.add_argument(
+        "--llm-url",
+        type=str,
+        default="https://generativelanguage.googleapis.com/v1beta/openai/",
+        help="The URL for the LLM API.",
     )
 
-    # Usage: python postprocess.py --annotations annotations_copy.xlsx --zip_dir test_zip_dir --output_dir output --parishes elimaki,iisalmen_kaupunkiseurakunta
+    args = parser.parse_args()
+
+    postprocess(
+        args.model,
+        args.llm_url,
+        Path(args.zip_dir),
+        Path(args.working_dir) if args.working_dir else None,
+        Path(args.annotations),
+        args.parishes.split(","),
+        Path(args.output_dir) if args.output_dir else None,
+    )
+
+    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
+
+    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen
+    # --model  --llm-url localhost:8000
