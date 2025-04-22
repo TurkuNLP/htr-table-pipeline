@@ -1,13 +1,14 @@
 import argparse
+import os
 from pathlib import Path
-import random
 import sys
 from typing import Optional
-from tqdm import tqdm
+from dotenv import load_dotenv
+import dspy
 from tqdm.contrib.concurrent import process_map
-import pandas as pd
 
 from header_gen import generate_header_annotations
+from table_corrector_agent import correct_table
 from tables_fix import remove_overlapping_tables
 
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
@@ -17,11 +18,10 @@ from cols_fix import (
     match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
-from table_types import CellData, Datatable, ParishBook, PrintType, TableAnnotation
+from table_types import Datatable, ParishBook, PrintType, TableAnnotation
 from utilities.temp_unzip import TempExtractedData
 from xml_utils import extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
-from eval import calculate_evaluation_statistics
 
 
 def rfind_first(path: Path, find: str) -> Optional[Path]:
@@ -47,6 +47,8 @@ def postprocess_printed(
     data: dict[Path, list[Datatable]],
     book: ParishBook,
     print_types: dict[str, PrintType],
+    model: str,
+    llm_url: str,
 ) -> dict[Path, list[Datatable]]:
     """
     Postprocess tables for printed books.
@@ -85,7 +87,15 @@ def postprocess_printed(
                 )
                 col_count = len(table.data.columns)
 
+            if dspy.settings.get("lm") and col_count != col_count_expected:
+                table = correct_table(
+                    table,
+                    annotation.col_headers,
+                )
+                col_count = len(table.data.columns)
+
             if col_count != col_count_expected:
+                # Last resort.
                 table = add_columns_using_name_as_anchor(
                     table,
                     annotation,
@@ -108,6 +118,8 @@ def postprocess_printed(
 def postprocess_handrawn(
     data: dict[Path, list[Datatable]],
     book: ParishBook,
+    model: str,
+    llm_url: str,
 ) -> dict[Path, list[Datatable]]:
     """
     Postprocess tables for handrawn books.
@@ -122,23 +134,25 @@ def postprocess_handrawn(
         tables = remove_overlapping_tables(tables)
         table_count = len(tables)
 
-        # Generate headers for the tables
-        headers: list[list[str]] = []
-        # for i, table in enumerate(tables):
-        #     headers.append(
-        #         generate_header_annotations(table, table.values.columns.size)
-        #     )
+        if model:
+            for i, table in enumerate(tables):
+                headers = generate_header_annotations(table, table.data.columns.size)
+                if len(headers) == table.data.columns.size:
+                    table.data.columns = headers
 
         data[jpg_path] = tables
     return data
 
 
-def postprocess_zip(
+def postprocess(
+    model: str,
+    llm_url: str,
     zip_path: Path,
     override_dir: Path | None,
     annotations: Path,
     parishes: list[str] = [],
     rezip_to: Path | None = None,
+    skip_llm: bool = False,
 ) -> None:
     only_extract: Optional[list[str]] = None
     if parishes:
@@ -164,6 +178,21 @@ def postprocess_zip(
                     if result:
                         return result
             return path
+
+        # Initialize LM
+
+        env_file = Path(__file__).parent.parent / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+
+        if model != "":
+            lm = dspy.LM(
+                model,
+                api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
+                api_base=llm_url,
+            )
+
+            dspy.configure(lm=lm)
 
         # Collects ALL the table data... May cause issues with RAM usage on full run
         # It's used for the evaluation stats and those aren't necessarily needed for the full run
@@ -195,15 +224,23 @@ def postprocess_zip(
 
 
 def postprocess_book_parallel_wrapper(
-    args: tuple[dict[str, PrintType], dict[str, ParishBook], Path],
+    args: tuple[
+        dict[str, PrintType],  # print_type_str -> PrintType
+        dict[str, ParishBook],  # book_folder_id -> ParishBook
+        Path,  # book_dir
+        str,  # model
+        str,  # llm_url
+    ],
 ) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
-    return postprocess_book(args[0], args[1], args[2])
+    return postprocess_book(args[0], args[1], args[2], args[3], args[4])
 
 
 def postprocess_book(
     printed_types: dict[str, PrintType],
     parish_books_mapping: dict[str, ParishBook],
     book_dir: Path,
+    model: str,
+    llm_url: str,
 ) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
     """
     Postprocess a single book.
@@ -252,10 +289,12 @@ def postprocess_book(
         # Postprocess the tables based on print type
     for print_type, type_data in book_data.items():
         if "handrawn" in print_type.lower():
-            type_data = postprocess_handrawn(type_data, book)
+            type_data = postprocess_handrawn(type_data, book, model, llm_url)
             book_data[print_type] = type_data
         else:
-            type_data = postprocess_printed(type_data, book, printed_types)
+            type_data = postprocess_printed(
+                type_data, book, printed_types, model, llm_url
+            )
             book_data[print_type] = type_data
     return book, book_data
 
@@ -275,7 +314,7 @@ if __name__ == "__main__":
         help="The directory which contains the parish .zip files.",
     )
     parser.add_argument(
-        "--override-dir",
+        "--working-dir",
         type=str,
         default=None,
         help="The directory to which the zips will be unzipped to. If not provided, a temporary directory will be created.",
@@ -292,15 +331,33 @@ if __name__ == "__main__":
         default="",
         help="Comma-separated list of parishes to process.",
     )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="openai/gemini-2.0-flash",
+        help="The model to use for the LLM. If empty, all llm-requiring steps will be skipped.",
+    )
+    parser.add_argument(
+        "--llm-url",
+        type=str,
+        default="https://generativelanguage.googleapis.com/v1beta/openai/",
+        help="The URL for the LLM API.",
+    )
+
     args = parser.parse_args()
 
-    postprocess_zip(
+    postprocess(
+        args.model,
+        args.llm_url,
         Path(args.zip_dir),
-        Path(args.override_dir) if args.override_dir else None,
+        Path(args.working_dir) if args.working_dir else None,
         Path(args.annotations),
         args.parishes.split(","),
         Path(args.output_dir) if args.output_dir else None,
     )
 
     # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
+
     # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen
+    # --model  --llm-url localhost:8000

@@ -79,24 +79,27 @@ class TempExtractedData:
             nested_zip_path = extract_to / file
             self._recursive_unzip(nested_zip_path, extract_to)
 
-    def _zip_directory(self, args: tuple[Path, Path]):
+    def _zip_wrapper(self, args: tuple[Path, Path]) -> None:
         """
-        Zips the contents of an entire folder (with that folder included
-        in the archive itself).
+        Wrapper function to zip a directory. This is used for parallel processing.
         """
-        folder_path, zip_path = args
+        dir_path, zip_path = args
+        self._zip(dir_path, zip_path)
 
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipfile_obj:
-            root_len = len(str(folder_path.resolve()))
+    def _zip(self, path_to_directory: Path, path_to_archive: Path):
+        """Zips a directory recursively including the top-level directory using pathlib and zipfile.
 
-            for root, _, files in os.walk(folder_path):
-                root = Path(root)
-                archive_root = str(root.resolve())[root_len:]
-
-                for file in files:
-                    filepath = root / file
-                    archive_name = os.path.join(archive_root, file)
-                    zipfile_obj.write(str(filepath), archive_name)
+        Args:
+            path_to_directory: The directory to zip.
+            path_to_archive: The path to the output zip file.
+        """
+        with zipfile.ZipFile(path_to_archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for file_path in path_to_directory.rglob("*"):
+                if file_path.is_file():
+                    arcname = Path(path_to_directory.name) / file_path.relative_to(
+                        path_to_directory
+                    )
+                    zip_file.write(file_path, arcname)
 
     def __exit__(self, exc_type, exc_value, traceback):
         print()
@@ -107,7 +110,7 @@ class TempExtractedData:
                 for file in self.temp_dir.iterdir()
             ]
             process_map(
-                self._zip_directory,
+                self._zip_wrapper,
                 zip_dir_parallel_args,
                 desc="Rezipping parish data",
                 unit="file",
