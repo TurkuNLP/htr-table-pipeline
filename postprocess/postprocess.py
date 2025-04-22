@@ -308,7 +308,7 @@ if __name__ == "__main__":
         help="The excel file with book and layout annotations, first tab should be books and the second layouts.",
     )
     parser.add_argument(
-        "--zip-dir",
+        "--input-dir",
         type=str,
         required=True,
         help="The directory which contains the parish .zip files.",
@@ -350,7 +350,7 @@ if __name__ == "__main__":
     postprocess(
         args.model,
         args.llm_url,
-        Path(args.zip_dir),
+        Path(args.input_dir),
         Path(args.working_dir) if args.working_dir else None,
         Path(args.annotations),
         args.parishes.split(","),
