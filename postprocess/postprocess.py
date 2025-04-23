@@ -2,7 +2,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Optional, cast
 from dotenv import load_dotenv
 import dspy
 from tqdm.contrib.concurrent import process_map
@@ -20,7 +20,7 @@ from cols_fix import (
 )
 from table_types import Datatable, ParishBook, PrintType, TableAnnotation
 from utilities.temp_unzip import TempExtractedData
-from xml_utils import extract_datatables_from_xml
+from xml_utils import book_create_updated_xml, extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
 
 
@@ -47,8 +47,6 @@ def postprocess_printed(
     data: dict[Path, list[Datatable]],
     book: ParishBook,
     print_types: dict[str, PrintType],
-    model: str,
-    llm_url: str,
 ) -> dict[Path, list[Datatable]]:
     """
     Postprocess tables for printed books.
@@ -118,8 +116,6 @@ def postprocess_printed(
 def postprocess_handrawn(
     data: dict[Path, list[Datatable]],
     book: ParishBook,
-    model: str,
-    llm_url: str,
 ) -> dict[Path, list[Datatable]]:
     """
     Postprocess tables for handrawn books.
@@ -134,7 +130,7 @@ def postprocess_handrawn(
         tables = remove_overlapping_tables(tables)
         table_count = len(tables)
 
-        if model:
+        if dspy.settings.get("lm"):
             for i, table in enumerate(tables):
                 headers = generate_header_annotations(table, table.data.columns.size)
                 if len(headers) == table.data.columns.size:
@@ -199,11 +195,11 @@ def postprocess(
         # Or are they...?
         # Anyways a quick estimate for all the dataframes in memory is around 10gb for the full dataset
         # TODO expose as cmd arg
-        data: dict[ParishBook, dict[str, dict[Path, list[Datatable]]]] = {}
+        data: dict[Path, dict[str, dict[Path, list[Datatable]]]] = {}
 
         # Gather all the book dirs
         book_dirs: list[Path] = []
-        for parish_dir in (data_dir / Path("output")).iterdir():  # TODO use the better
+        for parish_dir in data_dir.iterdir():
             split_name = parish_dir.name.split("_")
             end_i = split_name.index("fold")
             parish = "_".join(split_name[1:end_i])
@@ -217,10 +213,18 @@ def postprocess(
         process_map_args = [
             (printed_types, parish_books_mapping, book_dir) for book_dir in book_dirs
         ]
-        for book, book_data in process_map(
+
+        for book_dir, book_data in process_map(
             postprocess_book_parallel_wrapper, process_map_args
         ):
-            data[book] = book_data
+            assert isinstance(book, ParishBook)
+            book_data = cast(dict[str, dict[Path, list[Datatable]]], book_data)
+            all_datatables: list[Datatable] = []
+            for book_title, path_to_datatables in book_data.items():
+                for path, datatables in path_to_datatables.items():
+                    all_datatables.extend(datatables)
+            book_create_updated_xml(book_dir, all_datatables)
+            # data[book] = book_data
 
 
 def postprocess_book_parallel_wrapper(
@@ -228,20 +232,16 @@ def postprocess_book_parallel_wrapper(
         dict[str, PrintType],  # print_type_str -> PrintType
         dict[str, ParishBook],  # book_folder_id -> ParishBook
         Path,  # book_dir
-        str,  # model
-        str,  # llm_url
     ],
-) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
-    return postprocess_book(args[0], args[1], args[2], args[3], args[4])
+) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
+    return postprocess_book(args[0], args[1], args[2])
 
 
 def postprocess_book(
     printed_types: dict[str, PrintType],
     parish_books_mapping: dict[str, ParishBook],
     book_dir: Path,
-    model: str,
-    llm_url: str,
-) -> tuple[ParishBook, dict[str, dict[Path, list[Datatable]]]]:
+) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
     """
     Postprocess a single book.
 
@@ -289,14 +289,12 @@ def postprocess_book(
         # Postprocess the tables based on print type
     for print_type, type_data in book_data.items():
         if "handrawn" in print_type.lower():
-            type_data = postprocess_handrawn(type_data, book, model, llm_url)
+            type_data = postprocess_handrawn(type_data, book)
             book_data[print_type] = type_data
         else:
-            type_data = postprocess_printed(
-                type_data, book, printed_types, model, llm_url
-            )
+            type_data = postprocess_printed(type_data, book, printed_types)
             book_data[print_type] = type_data
-    return book, book_data
+    return book_dir, book_data
 
 
 if __name__ == "__main__":
@@ -341,7 +339,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-url",
         type=str,
-        default="https://generativelanguage.googleapis.com/v1beta/openai/",
+        default="https://generativelanguage.googleapis.com/v1beta/openai/REMOMOEFSMEOFMSEFMO",
         help="The URL for the LLM API.",
     )
 
@@ -357,7 +355,7 @@ if __name__ == "__main__":
         Path(args.output_dir) if args.output_dir else None,
     )
 
-    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
+    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
 
-    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --zip-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen
+    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen
     # --model  --llm-url localhost:8000

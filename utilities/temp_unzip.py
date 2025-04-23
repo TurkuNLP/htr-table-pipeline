@@ -90,9 +90,13 @@ class TempExtractedData:
         """Zips a directory recursively including the top-level directory using pathlib and zipfile.
 
         Args:
-            path_to_directory: The directory to zip.
+            path_to_directory: The directory that will be zipped zip.
             path_to_archive: The path to the output zip file.
         """
+        # Create path to the archive if it doesn't exist
+        path_to_archive.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create a zip file and add the source dir contents to it
         with zipfile.ZipFile(path_to_archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for file_path in path_to_directory.rglob("*"):
                 if file_path.is_file():
@@ -104,9 +108,8 @@ class TempExtractedData:
     def __exit__(self, exc_type, exc_value, traceback):
         print()
         if self.rezip_to:
-            print("Starting to zip directory:")
             zip_dir_parallel_args = [
-                (self.temp_dir / file, self.rezip_to / file.name)
+                (self.temp_dir / file, (self.rezip_to / file.name).with_suffix(".zip"))
                 for file in self.temp_dir.iterdir()
             ]
             process_map(

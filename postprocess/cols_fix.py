@@ -2,7 +2,7 @@ import unittest
 import pandas as pd
 
 
-from table_types import Datatable, TableAnnotation
+from table_types import CellData, Datatable, TableAnnotation
 
 
 def match_col_count_for_empty_tables(
@@ -27,7 +27,7 @@ def match_col_count_for_empty_tables(
     new_df = pd.DataFrame(columns=annotation.col_headers)
 
     # Add a row of "" so that the table doesn't get detected as a header later on
-    new_df.loc[0] = [""] * annotation.number_of_columns
+    new_df.loc[0] = [CellData("", None, None)] * annotation.number_of_columns
 
     datatable.data = new_df
 
@@ -194,7 +194,11 @@ def add_columns_using_name_as_anchor(
         # Add a new column to the left
         i += 1
         cols_to_insert_left.insert(
-            0, pd.Series([""] * len(datatable.data), name=f"fill column {i}")
+            0,
+            pd.Series(
+                [CellData("", None, None)] * len(datatable.data),
+                name=f"fill column {i}",
+            ),
         )
         col_names.insert(0, f"fill column {i}")
         name_col += 1
@@ -207,7 +211,10 @@ def add_columns_using_name_as_anchor(
         # Add a new column to the right
         i += 1
         cols_to_insert_right.append(
-            pd.Series([""] * len(datatable.data), name=f"fill column {i}")
+            pd.Series(
+                [CellData("", None, None)] * len(datatable.data),
+                name=f"fill column {i}",
+            )
         )
         col_names.append(f"fill column {i}")
 

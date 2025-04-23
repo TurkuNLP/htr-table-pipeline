@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
@@ -107,7 +108,7 @@ class Datatable:
     """
 
     rect: Rect
-    filename: str
+    source_path: Path
     id: str  # ID of the table in the XML
     data: pd.DataFrame  # DF of CellData
 

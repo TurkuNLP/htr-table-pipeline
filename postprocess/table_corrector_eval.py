@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from table_corrector_agent import correct_table
 from tables_fix import remove_overlapping_tables
-from table_types import Datatable, Rect
+from table_types import CellData, Datatable, Rect
 from xml_utils import extract_datatables_from_xml
 
 
@@ -58,7 +58,7 @@ if __name__ == "__main__":
         table = pd.read_excel(
             path.with_suffix(".xlsx"), sheet_name="Sheet1", index_col=0
         )
-        annotated_tables.append(Datatable(Rect(0, 0, 0, 0), path.name, table_id, table))
+        annotated_tables.append(Datatable(Rect(0, 0, 0, 0), path, table_id, table))
 
         # Compute the new tables
         with open(path, encoding="utf-8") as xml_file:
@@ -124,11 +124,11 @@ if __name__ == "__main__":
             table.data.insert(
                 len(table.data.columns),
                 "",
-                [""] * len(table.data.index),
+                [CellData("", None, None)] * len(table.data.index),
                 allow_duplicates=True,
             )
 
         table.data.columns = headers
-        table.data.to_markdown(
+        table.get_text_df.to_markdown(
             output_dir / Path(f"corrected_{table.id}.md"), index=False
         )
