@@ -5,6 +5,7 @@ import sys
 from typing import Optional, cast
 from dotenv import load_dotenv
 import dspy
+from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from header_gen import generate_header_annotations
@@ -214,8 +215,12 @@ def postprocess(
             (printed_types, parish_books_mapping, book_dir) for book_dir in book_dirs
         ]
 
-        for book_dir, book_data in process_map(
-            postprocess_book_parallel_wrapper, process_map_args
+        for book_dir, book_data in tqdm(
+            process_map(
+                postprocess_book_parallel_wrapper,
+                process_map_args,
+            ),
+            desc="Writing updated XML files",
         ):
             assert isinstance(book, ParishBook)
             book_data = cast(dict[str, dict[Path, list[Datatable]]], book_data)
@@ -251,7 +256,7 @@ def postprocess_book(
     book_dir: Path - The path to the book directory
 
     Returns:
-    tuple[ParishBook, dict[print_type_str, dict[jpeg_path, list[Datatable]]]] - The book and the data for the book
+    tuple[book path, dict[print_type_str, dict[jpeg_path, list[Datatable]]]] - The book and the data for the book
     """
 
     jpg_paths = list(book_dir.rglob("*.jpg"))
@@ -357,5 +362,5 @@ if __name__ == "__main__":
 
     # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
 
-    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes elimaki,alajarvi,ahlainen
+    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --model "" --parishes elimaki,alajarvi,ahlainen
     # --model  --llm-url localhost:8000

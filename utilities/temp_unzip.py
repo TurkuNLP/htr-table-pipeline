@@ -107,7 +107,7 @@ class TempExtractedData:
 
     def __exit__(self, exc_type, exc_value, traceback):
         print()
-        if self.rezip_to:
+        if self.rezip_to and exc_type is None:
             zip_dir_parallel_args = [
                 (self.temp_dir / file, (self.rezip_to / file.name).with_suffix(".zip"))
                 for file in self.temp_dir.iterdir()

@@ -113,10 +113,10 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         max_row = -1
         max_col = -1
         for cell in table.findall(".//ns:TableCell", namespace):
-            row_id = int(cell.attrib.get("row"))  # type: ignore
-            col_id = int(cell.attrib.get("col"))  # type: ignore
-            max_row = max(max_row, row_id)
-            max_col = max(max_col, col_id)
+            y_pos = int(cell.attrib.get("row"))  # type: ignore
+            x_pos = int(cell.attrib.get("col"))  # type: ignore
+            max_row = max(max_row, y_pos)
+            max_col = max(max_col, x_pos)
 
         # Create empty DataFrames with appropriate dimensions
         df_text = pd.DataFrame("", index=range(max_row + 1), columns=range(max_col + 1))
@@ -133,32 +133,33 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
         # Fill DataFrames directly
         for cell in table.findall(".//ns:TableCell", namespace):
-            row_id = int(cell.attrib.get("row"))  # type: ignore
-            col_id = int(cell.attrib.get("col"))  # type: ignore
+            y_pos = int(cell.attrib.get("row"))  # type: ignore
+            x_pos = int(cell.attrib.get("col"))  # type: ignore
 
-            # Validate row ordering (similar to the original assertion)
-            if row_id < last_row_id:
-                raise ValueError(
-                    f"Cells not in row order. Found row {row_id} after row {last_row_id}"
-                )
-            last_row_id = max(last_row_id, row_id)
+            # Validate row ordering
+            # NOTE ROWS ARE NOT ORDERED IN THE POSTPROCESSED XML FILES
+            # TODO Is that a problem? can be sorted but extra work
+            # if y_pos < last_row_id:
+            #     raise ValueError(
+            #         f"Cells not in row order. Found row {y_pos} after row {last_row_id}"
+            #     )
+            last_row_id = max(last_row_id, y_pos)
 
             # Get cell text
             text = read_text_from_cell(cell)
-            df_text.iloc[row_id, col_id] = text
+            df_text.iloc[y_pos, x_pos] = text
 
             # Get cell ID
             cell_id = cell.attrib.get("id")
-            df_ids.iloc[row_id, col_id] = cell_id
+            df_ids.iloc[y_pos, x_pos] = cell_id
 
             # Get cell coordinates
             coords_elem = cell.find(".//ns:Coords", namespace)
-            if coords_elem is None:
-                raise ValueError(f"Coords not found for cell {cell.attrib.get('id')}")
-            coord_points = parse_coords(str(coords_elem.attrib.get("points")))
-            cell_rects.extend(coord_points)
-            rect = compute_bounding_rect(coord_points)
-            coords[(row_id, col_id)] = rect
+            if coords_elem is not None:
+                coord_points = parse_coords(str(coords_elem.attrib.get("points")))
+                cell_rects.extend(coord_points)
+                rect = compute_bounding_rect(coord_points)
+                coords[(y_pos, x_pos)] = rect
 
             # Get cell type
             custom = cell.attrib.get("custom")
@@ -172,12 +173,14 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
                     cell_type = "empty"
                 case "structure {type:multi-line;}":
                     cell_type = "multi-line"
+                case None:  # on cells created by postprocessing...
+                    cell_type = "empty"
                 case _:
                     raise ValueError(
                         f"Unknown cell type: {custom} for cell {cell.attrib.get('id')}"
                     )
 
-            df_type.iloc[row_id, col_id] = cell_type
+            df_type.iloc[y_pos, x_pos] = cell_type
 
         # Fill any remaining empty cells
         df_text.replace("", "", inplace=True)
@@ -195,24 +198,26 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         df_text = resolve_same_as_cells(df_text, df_type)
 
         # get the table rectangle
-        # TODO !!! recompute the aabb from the cell coords
-        # coords_elem = table.find(".//ns:Coords", namespace)
-        # coord_points = parse_coords(str(coords_elem.attrib.get("points")))  # type: ignore
-        # rect = Rect.from_points(coord_points)
-        rect = compute_bounding_rect(cell_rects)
+        rect: Rect
+        if len(cell_rects) != 0:
+            rect = compute_bounding_rect(cell_rects)
+        else:
+            rect = Rect(0, 0, 0, 0)
 
         # Create a DataFrame of CellData objects
         data_df = pd.DataFrame(
             [
                 [
                     CellData(
-                        text=str(df_text.iloc[row_id, col_id]),
-                        id=str(df_ids.iloc[row_id, col_id]),
-                        rect=coords[(row_id, col_id)],
+                        text=str(df_text.iloc[y_pos, x_pos]),
+                        id=str(df_ids.iloc[y_pos, x_pos]),
+                        rect=(
+                            coords[(y_pos, x_pos)] if (y_pos, x_pos) in coords else None
+                        ),
                     )
-                    for col_id in range(df_text.shape[1])
+                    for x_pos in range(df_text.shape[1])
                 ]
-                for row_id in range(df_text.shape[0])
+                for y_pos in range(df_text.shape[0])
             ]
         )
 
@@ -231,10 +236,17 @@ def create_updated_xml_file(
         datatable.id: datatable for datatable in datatables
     }
 
+    tables_to_remove: list[ET.Element] = []
     for table in root.findall(".//ns:TableRegion", namespace):  # iterate over tables
+        if (
+            len(table.findall(".//ns:TableCell", namespace)) < 2
+        ):  # skip tables with only one cell, these are headers, or totally empty tables (no rows or columns)
+            continue
+
         table_id = str(table.attrib.get("id"))
         if table_id not in datatable_dict:
-            # Skip tables that are not in the datatables list
+            # Remove tables that passed the previous condition but are not in datatables
+            tables_to_remove.append(table)
             continue
 
         datatable = datatable_dict[table_id]
@@ -268,7 +280,6 @@ def create_updated_xml_file(
                 cell_el: ET.Element = cell_mapping.get(cell.id, None)  # type: ignore
                 if cell_el is None:
                     # Cell was created in postprocessing
-                    # #TODO create a new cell element
                     cell_el = ET.Element("TableCell")
                     table.append(
                         cell_el
@@ -280,6 +291,11 @@ def create_updated_xml_file(
                 if cell.rect:
                     coords_elem: ET.Element = cell_el.find(".//ns:Coords", namespace)  # type: ignore
                     coords_elem.attrib["points"] = cell.rect.get_coords_str()
+
+    page_element = root.find("ns:Page", namespace)
+    assert page_element is not None, "Page element not found in XML file."
+    for table in tables_to_remove:
+        page_element.remove(table)
 
     # Modifies global namespace registry...
     ET.register_namespace(
