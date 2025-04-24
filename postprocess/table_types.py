@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -118,9 +121,9 @@ class Datatable:
         """
         try:
             return self.data.map(lambda cell: cell.text)
-        except Exception as _:
-            print(self.data)
-            raise ValueError("DataFrame does not contain cell data.")
+        except Exception as e:
+            logger.error("Failed to map data CellData to text.")
+            raise e
 
 
 @dataclass

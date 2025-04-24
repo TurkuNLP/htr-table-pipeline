@@ -1,7 +1,6 @@
 import xml.etree.ElementTree as ET
 from io import TextIOWrapper
 from pathlib import Path
-from pprint import pprint
 
 import pandas as pd
 from table_types import CellData, Datatable, Rect
@@ -255,7 +254,6 @@ def create_updated_xml_file(
         for row in datatable.data.values.tolist():
             for cell in row:
                 if isinstance(cell, str):
-                    pprint(datatable)
                     raise ValueError(f"Cell is a string: {cell} in table {table_id}")
                 if cell.id:
                     cell_ids.append(cell.id)
@@ -314,6 +312,9 @@ def create_handrawn_annotations(
         if datatable.data.columns[0] is str:
             handrawn_tables.append(datatable)
 
+    raise NotImplementedError("Handrawn annotation file not implemented yet")
+    # TODO unfinished, create a jsonlines file in outputpath with the table headers
+
 
 def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> None:
     """
@@ -339,9 +340,6 @@ def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> Non
         if datatable.source_path.name not in file_datatables:
             file_datatables[datatable.source_path.name] = []
         file_datatables[datatable.source_path.name].append(datatable)
-
-    # print(f"Found {len(list(source_dir.glob('*.xml')))} XML files in {source_dir}")
-    # pprint(list(file_datatables.keys()))
 
     for source_xml_path in source_dir.glob("*.xml"):
         output_xml_path = output_dir / source_xml_path.name

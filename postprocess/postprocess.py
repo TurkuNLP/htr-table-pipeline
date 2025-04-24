@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import logging
 import os
 from pathlib import Path
 import sys
@@ -24,6 +25,9 @@ from table_types import Datatable, ParishBook, PrintType, TableAnnotation
 from utilities.temp_unzip import TempExtractedData
 from xml_utils import book_create_updated_xml, extract_datatables_from_xml
 from metadata import read_layout_annotations, get_parish_books_from_annotations
+
+
+logger = logging.getLogger(__name__)
 
 
 def rfind_first(path: Path, find: str) -> Optional[Path]:
@@ -207,16 +211,19 @@ def postprocess(
     model: str,
     llm_url: str,
     zip_path: Path,
-    override_dir: Path | None,  # TODO implement
+    override_working_dir: Path | None,
     annotations: Path,
     parishes: list[str] = [],
     rezip_to: Path | None = None,
 ) -> None:
-    only_extract: Optional[list[str]] = None
+    only_extract: list[str] | None = None
     if parishes:
         only_extract = parishes  # Only extract if this string is in the path
     with TempExtractedData(
-        zip_path, only_extract=only_extract, rezip_to=rezip_to
+        zip_path,
+        only_extract=only_extract,
+        rezip_to=rezip_to,
+        override_temp_dir=override_working_dir,
     ) as data_dir:
         # Get the annotations data
         parish_books = get_parish_books_from_annotations(annotations)
@@ -356,6 +363,8 @@ def postprocess_book(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--annotations",

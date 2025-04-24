@@ -1,11 +1,9 @@
-import os
-from pathlib import Path
 import shutil
 import tempfile
-from typing import Optional
 import zipfile
+from pathlib import Path
+from typing import Optional
 
-from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 
@@ -23,13 +21,21 @@ class TempExtractedData:
         zip_dir: Path,
         only_extract: list[str] | None = None,
         rezip_to: Path | None = None,
+        override_temp_dir: Path | None = None,
     ):
         self.zip_dir = zip_dir
         self.only_extract = only_extract
         self.rezip_to = rezip_to
+        # if not none, will extract here and NOT delete it after use
+        self.override_temp_dir = override_temp_dir
 
     def __enter__(self) -> Path:
-        self.temp_dir = Path(tempfile.mkdtemp())
+        if self.override_temp_dir:
+            self.temp_dir = self.override_temp_dir
+            if not self.temp_dir.exists():
+                raise FileNotFoundError(f"Temp dir {self.temp_dir} does not exist.")
+        else:
+            self.temp_dir = Path(tempfile.mkdtemp())
 
         self._unzip_all_in_dir(
             Path(self.zip_dir), Path(self.temp_dir), self.only_extract
@@ -119,6 +125,7 @@ class TempExtractedData:
                 unit="file",
             )
             print(f"Zipped data to: {self.rezip_to}")
-        print(f"Starting to delete directory: {self.temp_dir}")
-        shutil.rmtree(self.temp_dir)
-        print(f"Deleted temporary directory: {self.temp_dir}")
+        if not self.override_temp_dir:
+            print(f"Starting to delete directory: {self.temp_dir}")
+            shutil.rmtree(self.temp_dir)
+            print(f"Deleted temporary directory: {self.temp_dir}")

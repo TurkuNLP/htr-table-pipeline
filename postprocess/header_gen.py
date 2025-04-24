@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 from pathlib import Path
@@ -8,6 +9,9 @@ from table_types import Datatable
 from tables_fix import remove_overlapping_tables
 from tqdm import tqdm
 from xml_utils import extract_datatables_from_xml
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnnotateHeadersMulti(dspy.Signature):
@@ -152,13 +156,13 @@ if __name__ == "__main__":
     # Get header annotations from the updated function
     headers, sample_tables = generate_header_annotations_multi(tables)
 
-    print(f"Table headers: {headers}")
+    logger.info(f"Table headers: {headers}")
     output_dir = Path("debug/header_gen_output")
 
     if output_dir.exists():
         for file in output_dir.glob("*"):
             file.unlink()
-        print("Emptying output dir")
+        logger.info("Emptying output dir")
     else:
         output_dir.mkdir(parents=True)
 
@@ -169,8 +173,10 @@ if __name__ == "__main__":
                 output_dir / Path(f"dspy_test_{i}.md"), index=False
             )
     except ValueError as e:
-        print(f"Error: {e}")
-        print("Headers do not match the number of columns in the table.")
+        logger.error(
+            f"Headers do not match the number of columns in the table: {e}",
+            exc_info=True,
+        )
 
         for i, table in enumerate(tables):
             table.get_text_df().to_markdown(

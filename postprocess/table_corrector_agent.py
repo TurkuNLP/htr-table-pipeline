@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import logging
 import os
 import random
 import sys
@@ -11,6 +12,9 @@ from metadata import get_print_type_for_jpg
 from table_types import CellData, Datatable
 from tables_fix import remove_overlapping_tables
 from xml_utils import extract_datatables_from_xml
+
+
+logger = logging.getLogger(__name__)
 
 
 class HeaderTranslation(dspy.Signature):
@@ -144,6 +148,8 @@ class TableModification:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     # cmd args stuff
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True, help="Path to jpg file")
@@ -155,7 +161,7 @@ if __name__ == "__main__":
     if output_dir.exists():
         for file in output_dir.glob("*"):
             file.unlink()
-        print("Emptying output dir")
+        logger.info("Emptying output dir")
     else:
         output_dir.mkdir(parents=True)
 
@@ -184,7 +190,7 @@ if __name__ == "__main__":
         tables = remove_overlapping_tables(tables)
 
         for i, table in enumerate(tables):
-            print(f"Running correction on table {i}")
+            logger.info(f"Running correction on table {i}")
 
             print_type = get_print_type_for_jpg(
                 jpg_path,
