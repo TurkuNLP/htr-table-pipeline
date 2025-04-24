@@ -1,10 +1,13 @@
+import logging
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 from tqdm.contrib.concurrent import process_map
+
+
+logger = logging.getLogger(__name__)
 
 
 class TempExtractedData:
@@ -44,7 +47,7 @@ class TempExtractedData:
         return Path(self.temp_dir)
 
     def _unzip_all_in_dir(
-        self, zip_dir: Path, extract_to: Path, only_extract: Optional[list[str]] = None
+        self, zip_dir: Path, extract_to: Path, only_extract: list[str] | None = None
     ):
         """
         Unzip all zip files in the given directory to the specified extraction path.
@@ -99,9 +102,6 @@ class TempExtractedData:
             path_to_directory: The directory that will be zipped zip.
             path_to_archive: The path to the output zip file.
         """
-        # Create path to the archive if it doesn't exist
-        path_to_archive.parent.mkdir(parents=True, exist_ok=True)
-
         # Create a zip file and add the source dir contents to it
         with zipfile.ZipFile(path_to_archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for file_path in path_to_directory.rglob("*"):
@@ -112,20 +112,27 @@ class TempExtractedData:
                     zip_file.write(file_path, arcname)
 
     def __exit__(self, exc_type, exc_value, traceback):
-        print()
         if self.rezip_to and exc_type is None:
+            if not self.rezip_to.exists():
+                logger.info(f"Creating rezip directory: {self.rezip_to}")
+                self.rezip_to.mkdir(exist_ok=True)
+
             zip_dir_parallel_args = [
                 (self.temp_dir / file, (self.rezip_to / file.name).with_suffix(".zip"))
                 for file in self.temp_dir.iterdir()
             ]
+
             process_map(
                 self._zip_wrapper,
                 zip_dir_parallel_args,
                 desc="Rezipping parish data",
                 unit="file",
             )
-            print(f"Zipped data to: {self.rezip_to}")
+
+            logger.info(f"Zipped data to: {self.rezip_to}")
+
         if not self.override_temp_dir:
-            print(f"Starting to delete directory: {self.temp_dir}")
+            logger.info(f"Deleting directory: {self.temp_dir}")
             shutil.rmtree(self.temp_dir)
-            print(f"Deleted temporary directory: {self.temp_dir}")
+
+        logger.info("Exiting TempExtractedData context.")
