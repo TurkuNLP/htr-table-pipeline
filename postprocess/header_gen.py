@@ -42,7 +42,7 @@ class AnnotateHeaders(dspy.Signature):
     ordered_headers: list[str] = dspy.OutputField()
 
 
-def generate_header_annotations(
+async def generate_header_annotations(
     table: Datatable,
     number_of_columns: int,
 ) -> list[str]:
@@ -59,8 +59,9 @@ def generate_header_annotations(
 
     # Get header annotations
     classify = dspy.Predict(AnnotateHeaders)
-    res = classify(
-        table=table.get_text_df().to_markdown(index=False),
+    classify = dspy.asyncify(classify)
+    res = await classify(
+        table=table.get_text_df().to_markdown(index=False),  # type: ignore
         number_of_columns=number_of_columns,
     )
     return res.ordered_headers

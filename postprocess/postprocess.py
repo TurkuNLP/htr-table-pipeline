@@ -171,7 +171,7 @@ async def postprocess_handrawn_async_task(
         # TODO trim empty columns from the left and right?
 
         if dspy.settings.get("lm"):
-            headers = generate_header_annotations(table, table.data.columns.size)
+            headers = await generate_header_annotations(table, table.data.columns.size)
             if len(headers) == table.data.columns.size:
                 table.data.columns = headers
 
