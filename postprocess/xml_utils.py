@@ -1,11 +1,10 @@
+import xml.etree.ElementTree as ET
 from io import TextIOWrapper
 from pathlib import Path
 from pprint import pprint
-import xml.etree.ElementTree as ET
 
 import pandas as pd
 from table_types import CellData, Datatable, Rect
-
 
 namespace = {"ns": "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
 
@@ -43,7 +42,7 @@ def read_text_from_cell(
         )
         if text_line:
             text_lines.append(text_line)
-    text: str = "\n".join(l for l in text_lines).strip()
+    text: str = "\n".join(line for line in text_lines).strip()
     if text == "":
         text = ""
     text = str(text)
@@ -187,12 +186,12 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         df_text.fillna("", inplace=True)
 
         # Assert that there are no cells with None value
-        assert (
-            df_text.isnull().sum().sum() == 0
-        ), "Found NaN values in the text DataFrame"
-        assert (
-            df_type.isnull().sum().sum() == 0
-        ), "Found NaN values in the type DataFrame"
+        assert df_text.isnull().sum().sum() == 0, (
+            "Found NaN values in the text DataFrame"
+        )
+        assert df_type.isnull().sum().sum() == 0, (
+            "Found NaN values in the type DataFrame"
+        )
 
         # Resolve "same-as" cells to values from above
         df_text = resolve_same_as_cells(df_text, df_type)
@@ -304,6 +303,18 @@ def create_updated_xml_file(
     tree.write(output_xml_file, encoding="utf-8", xml_declaration=True)
 
 
+def create_handrawn_annotations(
+    handrawn_annotation_output_path: Path, datatables: list[Datatable]
+) -> None:
+    """
+    If any of the datatables are handrawn, creates a handrawn annotation file which stores the table headers
+    """
+    handrawn_tables: list[Datatable] = []
+    for datatable in datatables:
+        if datatable.data.columns[0] is str:
+            handrawn_tables.append(datatable)
+
+
 def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> None:
     """
     Creates updated xml files into book_path/pagePostprocessed/.
@@ -318,6 +329,9 @@ def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> Non
             file.unlink()
     else:
         output_dir.mkdir()
+
+    handrawn_annotation_output_path = book_path / "handrawn_annotations"
+    handrawn_annotation_output_path.mkdir(exist_ok=True)
 
     # Create a mapping of filenames to datatables
     file_datatables: dict[str, list[Datatable]] = {}
@@ -334,6 +348,9 @@ def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> Non
         if source_xml_path.name in file_datatables:
             create_updated_xml_file(
                 source_xml_path, output_xml_path, file_datatables[source_xml_path.name]
+            )
+            create_handrawn_annotations(
+                handrawn_annotation_output_path, file_datatables[source_xml_path.name]
             )
         else:
             # Just copy the source xml to output_xml
