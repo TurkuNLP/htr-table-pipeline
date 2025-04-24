@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -44,6 +45,81 @@ def rfind_first(path: Path, find: str) -> Optional[Path]:
     return None
 
 
+async def postprocess_printed_async_task(
+    jpg_path: Path,
+    tables: list[Datatable],
+    book: ParishBook,
+    print_types: dict[str, PrintType],
+) -> tuple[Path, list[Datatable]]:
+    opening_id = int(jpg_path.stem.split("_")[-1])
+    table_count = len(tables)
+    table_count_expected = print_types[
+        book.get_type_for_opening(opening_id)
+    ].table_count
+
+    # Remove extra tables
+    if table_count > table_count_expected:
+        tables = remove_overlapping_tables(tables)
+        table_count = len(tables)  # Update table count after filtering
+
+    # Only a few iterations
+    for i, table in enumerate(tables):
+        print_type = print_types[book.get_type_for_opening(opening_id)]
+        annotation: TableAnnotation
+        # check if i in annotation
+        if i >= len(print_type.table_annotations):
+            # print(f"Table {i} not found in annotations")
+            annotation = print_type.table_annotations[-1]
+        else:
+            annotation = print_type.table_annotations[i]
+
+        col_count = len(table.data.columns)
+        col_count_expected = annotation.number_of_columns
+
+        # TODO a better way to mark tables as problematic (to be passed to the corrector agent)
+        # Biggest one is checking that the column with longest strings is aligned with name column
+
+        # TODO add asyncio.to_thread and wrap dspy program in asyncify to make it awaitable
+
+        if col_count != col_count_expected:
+            table = await asyncio.to_thread(
+                remove_empty_columns_using_name_as_anchor,
+                table,
+                annotation,
+            )
+            col_count = len(table.data.columns)
+
+        if dspy.settings.get("lm") and col_count != col_count_expected:
+            table = await correct_table(
+                table,
+                annotation.col_headers,
+            )
+            col_count = len(table.data.columns)
+
+        if col_count != col_count_expected:
+            # Last resort, corrector agent does this too but some may get through
+            table = await asyncio.to_thread(
+                add_columns_using_name_as_anchor,
+                table,
+                annotation,
+            )
+            col_count = len(table.data.columns)
+
+        if col_count != col_count_expected:
+            # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
+            # TODO Currently keeps an empty row so that it's not recognized as a header by other code, should this be so?
+            table = await asyncio.to_thread(
+                match_col_count_for_empty_tables,
+                table,
+                annotation,
+            )
+            col_count = len(table.data.columns)
+
+        tables[i] = table
+
+    return jpg_path, tables
+
+
 def postprocess_printed(
     data: dict[Path, list[Datatable]],
     book: ParishBook,
@@ -53,65 +129,53 @@ def postprocess_printed(
     Postprocess tables for printed books.
 
     The aim of the printed postprocessing is to have the correct number of tables with the right data in the right columns as defined in the print annotations.
+
+    This function is run on a separate process (using process_map) and creates the asyncio tasks (coroutines)
+    which can call the more cpu intensive functions in a thread pool (asyncio.to_thread) which all run
+    on the same cpu core... All this so that LM calls can (hopefully) be batched better by vllm.
     """
-    for jpg_path, tables in data.items():
-        opening_id = int(jpg_path.stem.split("_")[-1])
-        table_count = len(tables)
-        table_count_expected = print_types[
-            book.get_type_for_opening(opening_id)
-        ].table_count
 
-        # Remove extra tables
-        if table_count > table_count_expected:
-            tables = remove_overlapping_tables(tables)
-            table_count = len(tables)  # Update table count after filtering
+    async def main():
+        tasks = [
+            postprocess_printed_async_task(jpg_path, tables, book, print_types)
+            for jpg_path, tables in data.items()
+        ]
+        results = await asyncio.gather(*tasks)
+        return results
 
-        for i, table in enumerate(tables):
-            print_type = print_types[book.get_type_for_opening(opening_id)]
-            annotation: TableAnnotation
-            # check if i in annotation
-            if i >= len(print_type.table_annotations):
-                # print(f"Table {i} not found in annotations")
-                annotation = print_type.table_annotations[-1]
-            else:
-                annotation = print_type.table_annotations[i]
+    for jpg_path, updated_tables in asyncio.run(main()):
+        # Update the tables in the data dict
+        data[jpg_path] = updated_tables
 
-            col_count = len(table.data.columns)
-            col_count_expected = annotation.number_of_columns
-
-            if col_count != col_count_expected:
-                table = remove_empty_columns_using_name_as_anchor(
-                    table,
-                    annotation,
-                )
-                col_count = len(table.data.columns)
-
-            if dspy.settings.get("lm") and col_count != col_count_expected:
-                table = correct_table(
-                    table,
-                    annotation.col_headers,
-                )
-                col_count = len(table.data.columns)
-
-            if col_count != col_count_expected:
-                # Last resort.
-                table = add_columns_using_name_as_anchor(
-                    table,
-                    annotation,
-                )
-                col_count = len(table.data.columns)
-
-            if col_count != col_count_expected:
-                # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
-                # TODO Currently a row of "" is kept so that it's not recognized as a header by other code, should this be so?
-                table = match_col_count_for_empty_tables(
-                    table,
-                    annotation,
-                )
-                col_count = len(table.data.columns)
-
-        data[jpg_path] = tables
     return data
+
+
+async def postprocess_handrawn_async_task(
+    jpg_path: Path,
+    tables: list[Datatable],
+    book: ParishBook,
+) -> tuple[Path, list[Datatable]]:
+    """
+    Postprocess tables for handrawn books.
+
+    The aim is to figure out what data is stored in whatever columns
+    """
+    _opening_id = int(jpg_path.stem.split("_")[-1])
+    _table_count = len(tables)
+
+    # Remove extra tables
+    tables = remove_overlapping_tables(tables)
+    _table_count = len(tables)
+
+    for i, table in enumerate(tables):
+        # TODO trim empty columns from the left and right?
+
+        if dspy.settings.get("lm"):
+            headers = generate_header_annotations(table, table.data.columns.size)
+            if len(headers) == table.data.columns.size:
+                table.data.columns = headers
+
+    return jpg_path, tables
 
 
 def postprocess_handrawn(
@@ -123,21 +187,19 @@ def postprocess_handrawn(
 
     The aim is to figure out what data is stored in whatever columns
     """
-    for jpg_path, tables in data.items():
-        _opening_id = int(jpg_path.stem.split("_")[-1])
-        _table_count = len(tables)
 
-        # Remove extra tables
-        tables = remove_overlapping_tables(tables)
-        _table_count = len(tables)
+    async def main():
+        tasks = [
+            postprocess_handrawn_async_task(jpg_path, tables, book)
+            for jpg_path, tables in data.items()
+        ]
+        results = await asyncio.gather(*tasks)
+        return results
 
-        if dspy.settings.get("lm"):
-            for i, table in enumerate(tables):
-                headers = generate_header_annotations(table, table.data.columns.size)
-                if len(headers) == table.data.columns.size:
-                    table.data.columns = headers
+    for jpg_path, updated_tables in asyncio.run(main()):
+        # Update the tables in the data dict
+        data[jpg_path] = updated_tables
 
-        data[jpg_path] = tables
     return data
 
 
@@ -145,11 +207,10 @@ def postprocess(
     model: str,
     llm_url: str,
     zip_path: Path,
-    override_dir: Path | None,
+    override_dir: Path | None,  # TODO implement
     annotations: Path,
     parishes: list[str] = [],
     rezip_to: Path | None = None,
-    skip_llm: bool = False,
 ) -> None:
     only_extract: Optional[list[str]] = None
     if parishes:
@@ -191,13 +252,6 @@ def postprocess(
 
             dspy.configure(lm=lm)
 
-        # Collects ALL the table data... May cause issues with RAM usage on full run
-        # It's used for the evaluation stats and those aren't necessarily needed for the full run
-        # Or are they...?
-        # Anyways a quick estimate for all the dataframes in memory is around 10gb for the full dataset
-        # TODO expose as cmd arg
-        _data: dict[Path, dict[str, dict[Path, list[Datatable]]]] = {}
-
         # Gather all the book dirs
         book_dirs: list[Path] = []
         for parish_dir in data_dir.iterdir():
@@ -225,11 +279,10 @@ def postprocess(
             assert isinstance(book, ParishBook)
             book_data = cast(dict[str, dict[Path, list[Datatable]]], book_data)
             all_datatables: list[Datatable] = []
-            for book_title, path_to_datatables in book_data.items():
-                for path, datatables in path_to_datatables.items():
+            for book_title, path_datatables_mapping in book_data.items():
+                for path, datatables in path_datatables_mapping.items():
                     all_datatables.extend(datatables)
             book_create_updated_xml(book_dir, all_datatables)
-            # data[book] = book_data
 
 
 def postprocess_book_parallel_wrapper(
@@ -248,7 +301,7 @@ def postprocess_book(
     book_dir: Path,
 ) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
     """
-    Postprocess a single book.
+    Postprocess a single book. Called on a separate process using `process_map`.
 
     Arguments:
     printed_types: dict[str, PrintType] - The print types for the book

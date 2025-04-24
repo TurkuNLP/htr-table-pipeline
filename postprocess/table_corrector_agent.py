@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 import random
 import sys
@@ -19,7 +20,7 @@ class HeaderTranslation(dspy.Signature):
     translated_headers: list[str] = dspy.OutputField()
 
 
-def correct_table(table: Datatable, headers: list[str]) -> Datatable:
+async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     # Translate the headers
     translate = dspy.Predict(HeaderTranslation)
     translated_headers: list[str] = translate(headers=headers).translated_headers  # type: ignore
@@ -47,9 +48,12 @@ def correct_table(table: Datatable, headers: list[str]) -> Datatable:
         max_iters=9,
     )
 
+    # With asyncify the dspy program SHOULD await properly...
+    react = dspy.asyncify(react)
+
     # Run the ReAct agent
-    _res = react(
-        table=table_mod.get_table_head(),
+    _res = await react(
+        table=table_mod.get_table_head(),  # type: ignore
         headers=translated_headers,
     )
 
@@ -190,7 +194,10 @@ if __name__ == "__main__":
             )
             headers = print_type.table_annotations[0].col_headers
 
-            table = correct_table(table, headers)
+            async def main():
+                return await correct_table(table, headers)
+
+            table = asyncio.run(main())
 
             table.get_text_df().to_markdown(
                 output_dir / Path(f"{i}corrected_table.md"),
