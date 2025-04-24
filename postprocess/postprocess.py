@@ -291,9 +291,9 @@ def postprocess_book(
             book_data[book.get_type_for_opening(opening_id)] = {}
         book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
 
-        # Postprocess the tables based on print type
+    # Postprocess the tables based on print type
     for print_type, type_data in book_data.items():
-        if "handrawn" in print_type.lower():
+        if "print" not in print_type.lower():
             type_data = postprocess_handrawn(type_data, book)
             book_data[print_type] = type_data
         else:

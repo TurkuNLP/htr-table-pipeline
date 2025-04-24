@@ -248,3 +248,9 @@ class PrintType:
     @property
     def table_count(self) -> int:
         return len(self.table_annotations)
+
+    def is_printed(self) -> bool:
+        """
+        Returns True if the print type is print_X.
+        """
+        return "print" in self.name.lower()

@@ -7,6 +7,8 @@ import pandas as pd
 import statistics
 import numpy as np
 from tqdm import tqdm
+import multiprocessing
+from functools import partial
 
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
 
@@ -18,17 +20,320 @@ from xml_utils import extract_datatables_from_xml
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
+def _process_single_book(
+    book_dir: Path,
+    parish_name: str,
+    parish_books_mapping: dict[str, ParishBook],
+    printed_types: dict[str, PrintType],
+    xml_source: str,
+) -> dict | None:
+    """
+    Processes a single book directory to calculate descriptive stats.
+    Helper function for parallel processing.
+    Returns a dictionary with stats or None if processing fails early.
+    """
+
+    try:
+        # Ensure parent directory exists before creating book_folder_id
+        if not book_dir.parent:
+            logging.warning(
+                f"Cannot determine parent directory for {book_dir}. Skipping book."
+            )
+            return None
+        book_folder_id = f"{book_dir.parent.name}_{book_dir.name}"
+        current_parish_book = parish_books_mapping.get(book_folder_id)
+
+        # Initialize book stats here, even if annotation is missing, to potentially report 0s
+        book_stats = {
+            "parish": parish_name,
+            "book_id": book_folder_id,
+            "num_xml_files": 0,
+            "num_tables_total": 0,
+            "num_tables_printed": 0,
+            "num_tables_handwritten": 0,
+            "num_columns_total": 0,
+            "median_columns_per_table": 0.0,
+            "num_rows_total": 0.0,
+            "median_rows_per_table": 0.0,
+            "num_pages_wrong_table_count": 0,
+            "num_pages_more_tables_than_expected": 0,
+            "num_pages_fewer_tables_than_expected": 0,
+            "perc_pages_wrong_table_count": 0.0,
+            "perc_pages_more_tables_than_expected": 0.0,
+            "perc_pages_fewer_tables_than_expected": 0.0,
+            "num_printed_tables_wrong_cols": 0,
+            "num_printed_tables_more_cols_than_expected": 0,
+            "num_printed_tables_fewer_cols_than_expected": 0,
+            "perc_printed_tables_wrong_cols": 0.0,
+            "perc_printed_tables_more_cols_than_expected": 0.0,
+            "perc_printed_tables_fewer_cols_than_expected": 0.0,
+        }
+        # Lists to store counts for median calculation per book
+        book_col_counts = []
+        book_row_counts = []
+
+        if not current_parish_book:
+            logging.warning(
+                f"No annotation found for book: {book_folder_id}. Reporting zero stats."
+            )
+            # Ensure medians/percentages are NaN or 0 if no data
+            book_stats["median_columns_per_table"] = np.nan
+            book_stats["median_rows_per_table"] = np.nan
+            book_stats["perc_pages_wrong_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+            book_stats["perc_printed_tables_wrong_cols"] = np.nan
+            book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
+            book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
+            return book_stats  # Return stats with NaNs
+
+        xml_source_dir = book_dir / xml_source
+        if not xml_source_dir.exists():
+            logging.warning(
+                f"XML source directory not found for book: {xml_source_dir}. Reporting zero stats for this book."
+            )
+            # Ensure medians/percentages are NaN or 0 if no data
+            book_stats["median_columns_per_table"] = np.nan
+            book_stats["median_rows_per_table"] = np.nan
+            book_stats["perc_pages_wrong_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+            book_stats["perc_printed_tables_wrong_cols"] = np.nan
+            book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
+            book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
+            return book_stats  # Return stats with NaNs
+
+        page_has_wrong_table_count = False  # Flag per page
+
+        for xml_file_path in xml_source_dir.glob("*.xml"):
+            book_stats["num_xml_files"] += 1
+            page_has_wrong_table_count = False  # Reset flag for each new page
+
+            try:
+                filename_parts = xml_file_path.stem.split("_")
+                opening_str = filename_parts[-1]
+                opening = int(opening_str)
+            except (IndexError, ValueError):
+                logging.warning(
+                    f"Could not parse opening number from filename: {xml_file_path.name}. Skipping file for stats.",
+                    exc_info=True,
+                )
+                continue
+
+            try:
+                print_type_str = current_parish_book.get_type_for_opening(opening)
+                if not "print" in print_type_str:
+                    print_type_obj = None
+                    is_printed = False
+                else:
+                    print_type_obj = printed_types.get(print_type_str.lower())
+                    is_printed = True
+
+            except Exception as e:
+                logging.warning(
+                    f"Error getting print type for {xml_file_path.name} (opening {opening}): {e}. Assuming handwritten.",
+                    exc_info=True,
+                )
+                print_type_obj = None
+                is_printed = False
+                # Continue processing the file, assuming it's handwritten
+
+            try:
+                with open(xml_file_path, "r", encoding="utf-8") as f:
+                    tables = extract_datatables_from_xml(f)
+            except Exception as e:
+                logging.error(
+                    f"Error extracting tables from {xml_file_path}: {e}. Skipping file for stats.",
+                    exc_info=True,
+                )
+                continue
+
+            expected_table_count = -1  # Use -1 to indicate not checked/not applicable
+            if print_type_obj:
+                expected_table_count = print_type_obj.table_count
+            # No need for elif "handrawn", default is -1
+
+            # Check for wrong number of tables on the page
+            if expected_table_count != -1 and len(tables) != expected_table_count:
+                book_stats["num_pages_wrong_table_count"] += 1
+                page_has_wrong_table_count = True  # Set flag for this page
+                if len(tables) > expected_table_count:
+                    book_stats["num_pages_more_tables_than_expected"] += 1
+                else:  # len(tables) < expected_table_count
+                    book_stats["num_pages_fewer_tables_than_expected"] += 1
+
+            # Sort tables by horizontal position early if needed for 2-table layouts
+            if is_printed and print_type_obj and print_type_obj.table_count == 2:
+                tables.sort(key=lambda t: t.rect.x)
+
+            for table_index, table in enumerate(tables):
+                book_stats["num_tables_total"] += 1
+                actual_cols = 0  # Initialize
+                # Ensure table.data is a DataFrame before accessing shape
+                if isinstance(table.data, pd.DataFrame) and not table.data.empty:
+                    actual_cols = table.data.shape[1]
+                    rows = table.data.shape[0]
+                    book_stats["num_columns_total"] += actual_cols
+                    book_stats["num_rows_total"] += rows
+                    book_col_counts.append(actual_cols)  # Store for median
+                    book_row_counts.append(rows)  # Store for median
+                else:
+                    logging.warning(
+                        f"Table data is not a valid DataFrame in {xml_file_path.name}, table ID {table.id}. Skipping shape calculation for book stats."
+                    )
+                    # Still count the table if it exists, but column/row counts are 0/unknown
+                    book_col_counts.append(0)
+                    book_row_counts.append(0)
+
+                if is_printed and print_type_obj:
+                    book_stats["num_tables_printed"] += 1
+
+                    # Check for incorrect column count only if the number of tables was as expected
+                    # or if table count wasn't checked (-1). Also requires valid DataFrame.
+                    if (
+                        (not page_has_wrong_table_count or expected_table_count == -1)
+                        and isinstance(table.data, pd.DataFrame)
+                        and not table.data.empty
+                    ):
+                        expected_cols = -1  # Default if not found
+
+                        if expected_table_count == 1:
+                            if print_type_obj.table_annotations:
+                                expected_cols = print_type_obj.table_annotations[
+                                    0
+                                ].number_of_columns
+                            else:
+                                logging.warning(
+                                    f"Print type {print_type_str} has expected_table_count=1 but no table_annotations defined."
+                                )
+                        elif expected_table_count == 2:
+                            # Tables were sorted earlier
+                            if (
+                                len(tables) == 2
+                                and print_type_obj.table_annotations
+                                and len(print_type_obj.table_annotations) == 2
+                            ):
+                                # Sort annotations by page attribute ('left', 'right')
+                                sorted_annotations = sorted(
+                                    print_type_obj.table_annotations,
+                                    key=lambda ann: 0 if ann.page == "left" else 1,
+                                )
+                                try:
+                                    expected_cols = sorted_annotations[
+                                        table_index
+                                    ].number_of_columns
+                                except IndexError:
+                                    logging.warning(
+                                        f"Could not get expected columns for table index {table_index} (expected 2 tables/annotations) in {xml_file_path.name}"
+                                    )
+                            elif len(tables) != 2:
+                                # This case should ideally be caught by page_has_wrong_table_count, but log just in case
+                                logging.warning(
+                                    f"Expected 2 tables but found {len(tables)} in {xml_file_path.name} while checking columns."
+                                )
+                            else:  # Annotations missing or wrong count
+                                logging.warning(
+                                    f"Print type {print_type_str} has expected_table_count=2 but incorrect table_annotations defined ({len(print_type_obj.table_annotations)} found)."
+                                )
+
+                        # Now compare actual vs expected columns if expected_cols was determined
+                        if expected_cols != -1 and actual_cols != expected_cols:
+                            book_stats["num_printed_tables_wrong_cols"] += 1
+                            if actual_cols > expected_cols:
+                                book_stats[
+                                    "num_printed_tables_more_cols_than_expected"
+                                ] += 1
+                            else:  # actual_cols < expected_cols
+                                book_stats[
+                                    "num_printed_tables_fewer_cols_than_expected"
+                                ] += 1
+
+                else:  # Handwritten table or print type unknown/missing
+                    book_stats["num_tables_handwritten"] += 1
+
+        # --- Calculate medians and percentages for the book ---
+        if book_col_counts:
+            book_stats["median_columns_per_table"] = statistics.median(book_col_counts)
+        else:
+            book_stats["median_columns_per_table"] = np.nan  # Use NaN if no tables
+
+        if book_row_counts:
+            book_stats["median_rows_per_table"] = statistics.median(book_row_counts)
+        else:
+            book_stats["median_rows_per_table"] = np.nan  # Use NaN if no tables
+
+        # Calculate percentages for table count discrepancies
+        if book_stats["num_xml_files"] > 0:
+            book_stats["perc_pages_wrong_table_count"] = (
+                book_stats["num_pages_wrong_table_count"] / book_stats["num_xml_files"]
+            )
+            book_stats["perc_pages_more_tables_than_expected"] = (
+                book_stats["num_pages_more_tables_than_expected"]
+                / book_stats["num_xml_files"]
+            )
+            book_stats["perc_pages_fewer_tables_than_expected"] = (
+                book_stats["num_pages_fewer_tables_than_expected"]
+                / book_stats["num_xml_files"]
+            )
+        else:
+            book_stats["perc_pages_wrong_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+
+        # Calculate percentages for column count discrepancies (based on printed tables)
+        if book_stats["num_tables_printed"] > 0:
+            book_stats["perc_printed_tables_wrong_cols"] = (
+                book_stats["num_printed_tables_wrong_cols"]
+                / book_stats["num_tables_printed"]
+            )
+            book_stats["perc_printed_tables_more_cols_than_expected"] = (
+                book_stats["num_printed_tables_more_cols_than_expected"]
+                / book_stats["num_tables_printed"]
+            )
+            book_stats["perc_printed_tables_fewer_cols_than_expected"] = (
+                book_stats["num_printed_tables_fewer_cols_than_expected"]
+                / book_stats["num_tables_printed"]
+            )
+        else:
+            # If no printed tables, percentages are NaN if counts > 0, else 0.0
+            book_stats["perc_printed_tables_wrong_cols"] = (
+                np.nan if book_stats["num_printed_tables_wrong_cols"] > 0 else 0.0
+            )
+            book_stats["perc_printed_tables_more_cols_than_expected"] = (
+                np.nan
+                if book_stats["num_printed_tables_more_cols_than_expected"] > 0
+                else 0.0
+            )
+            book_stats["perc_printed_tables_fewer_cols_than_expected"] = (
+                np.nan
+                if book_stats["num_printed_tables_fewer_cols_than_expected"] > 0
+                else 0.0
+            )
+
+        return book_stats
+
+    except Exception as e:
+        logging.error(
+            f"Error processing book {book_dir.name} in parish {parish_name}: {e}",
+            exc_info=False,
+        )
+        return None  # Indicate failure for this book
+
+
 def descriptive_stats_per_book(
     data_dir: Path,
     annotations_file: Path,
     xml_source: Literal[
         "pagePostprocessed", "pageTextClassified"
     ] = "pageTextClassified",
+    num_workers: int | None = None,  # Add parameter for number of workers
 ) -> pd.DataFrame:
     """
-    Generate descriptive stats for each book individually, including medians and percentages.
+    Generate descriptive stats for each book individually, using parallel processing.
+    Includes medians and percentages.
     """
-    all_book_stats = []
+    all_book_stats_list = []
+    books_to_process = []  # List to hold arguments for worker function
 
     # Get the annotations data
     try:
@@ -45,12 +350,17 @@ def descriptive_stats_per_book(
         logging.error(f"Error reading annotations file {annotations_file}: {e}")
         return pd.DataFrame()  # Return empty DataFrame
 
-    for parish_dir in tqdm(list(data_dir.iterdir()), desc="Processing parishes"):
+    logging.info("Identifying books to process...")
+    # First pass: Identify all books to be processed
+    for parish_dir in data_dir.iterdir():
         if not parish_dir.is_dir():
             continue
 
         dir_with_books = find_first_dir_with_multiple_files(parish_dir)
         if not dir_with_books or not any(dir_with_books.iterdir()):
+            logging.warning(
+                f"No book directories found in {parish_dir}, skipping parish."
+            )
             continue
 
         parish_name = parish_dir.name
@@ -58,363 +368,71 @@ def descriptive_stats_per_book(
         for book_dir in dir_with_books.iterdir():
             if not book_dir.is_dir():
                 continue
+            # Add arguments for this book to the list
+            books_to_process.append(
+                (book_dir, parish_name, parish_books_mapping, printed_types, xml_source)
+            )
 
-            # Ensure parent directory exists before creating book_folder_id
-            if not book_dir.parent:
-                logging.warning(
-                    f"Cannot determine parent directory for {book_dir}. Skipping book."
-                )
-                continue
-            book_folder_id = f"{book_dir.parent.name}_{book_dir.name}"
-            current_parish_book = parish_books_mapping.get(book_folder_id)
+    if not books_to_process:
+        logging.warning("No books found to process.")
+        return pd.DataFrame()
 
-            # Initialize book stats here, even if annotation is missing, to potentially report 0s
-            book_stats = {
-                "parish": parish_name,
-                "book_id": book_folder_id,
-                "num_xml_files": 0,
-                "num_tables_total": 0,
-                "num_tables_printed": 0,
-                "num_tables_handwritten": 0,
-                "num_columns_total": 0,
-                "median_columns_per_table": 0.0,
-                "num_rows_total": 0,
-                "median_rows_per_table": 0.0,
-                "num_pages_wrong_table_count": 0,
-                "num_pages_more_tables_than_expected": 0,
-                "num_pages_fewer_tables_than_expected": 0,
-                "perc_pages_wrong_table_count": 0.0,
-                "perc_pages_more_tables_than_expected": 0.0,
-                "perc_pages_fewer_tables_than_expected": 0.0,
-                "num_printed_tables_wrong_cols": 0,
-                "num_printed_tables_more_cols_than_expected": 0,
-                "num_printed_tables_fewer_cols_than_expected": 0,
-                "perc_printed_tables_wrong_cols": 0.0,
-                "perc_printed_tables_more_cols_than_expected": 0.0,
-                "perc_printed_tables_fewer_cols_than_expected": 0.0,
-            }
-            # Lists to store counts for median calculation per book
-            book_col_counts = []
-            book_row_counts = []
+    logging.info(
+        f"Found {len(books_to_process)} books. Starting parallel processing..."
+    )
 
-            if not current_parish_book:
-                logging.warning(
-                    f"No annotation found for book: {book_folder_id}. Reporting zero stats."
-                )
-                # Ensure medians/percentages are NaN or 0 if no data
-                book_stats["median_columns_per_table"] = np.nan
-                book_stats["median_rows_per_table"] = np.nan
-                book_stats["perc_pages_wrong_table_count"] = np.nan
-                book_stats["perc_pages_more_tables_than_expected"] = np.nan
-                book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
-                book_stats["perc_printed_tables_wrong_cols"] = np.nan
-                book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
-                book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
-                all_book_stats.append(book_stats)
-                continue
+    # Use multiprocessing Pool
+    # If num_workers is None, Pool defaults to os.cpu_count()
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        # Use starmap to pass multiple arguments from the tuples in books_to_process
+        results = list(
+            pool.starmap(_process_single_book, books_to_process),
+        )
 
-            xml_source_dir = book_dir / xml_source
-            if not xml_source_dir.exists():
-                logging.warning(
-                    f"XML source directory not found for book: {xml_source_dir}. Reporting zero stats for this book."
-                )
-                # Ensure medians/percentages are NaN or 0 if no data
-                book_stats["median_columns_per_table"] = np.nan
-                book_stats["median_rows_per_table"] = np.nan
-                book_stats["perc_pages_wrong_table_count"] = np.nan
-                book_stats["perc_pages_more_tables_than_expected"] = np.nan
-                book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
-                book_stats["perc_printed_tables_wrong_cols"] = np.nan
-                book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
-                book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
-                all_book_stats.append(book_stats)
-                continue
+    # Filter out None results (from books that failed processing)
+    all_book_stats_list = [stats for stats in results if stats is not None]
 
-            page_has_wrong_table_count = False  # Flag per page
+    if not all_book_stats_list:
+        logging.warning("No books were successfully processed.")
+        # Fall through to return empty DataFrame with correct columns
 
-            for xml_file_path in xml_source_dir.glob("*.xml"):
-                book_stats["num_xml_files"] += 1
-                page_has_wrong_table_count = False  # Reset flag for each new page
-
-                try:
-                    filename_parts = xml_file_path.stem.split("_")
-                    opening_str = filename_parts[-1]
-                    opening = int(opening_str)
-                except (IndexError, ValueError):
-                    logging.warning(
-                        f"Could not parse opening number from filename: {xml_file_path.name}. Skipping file for stats."
-                    )
-                    continue
-
-                try:
-                    print_type_str = current_parish_book.get_type_for_opening(opening)
-                    print_type_obj = printed_types.get(print_type_str.lower())
-                except Exception as e:
-                    logging.warning(
-                        f"Error getting print type for {xml_file_path.name} (opening {opening}): {e}. Skipping file for stats."
-                    )
-                    continue
-
-                is_printed = (
-                    print_type_obj is not None
-                    and not print_type_str.lower().startswith("handrawn")
-                )
-
-                try:
-                    with open(xml_file_path, "r", encoding="utf-8") as f:
-                        tables = extract_datatables_from_xml(f)
-                except Exception as e:
-                    logging.error(
-                        f"Error extracting tables from {xml_file_path}: {e}. Skipping file for stats.",
-                        exc_info=True,
-                    )
-                    continue
-
-                expected_table_count = (
-                    -1
-                )  # Use -1 to indicate not checked/not applicable
-                if print_type_obj:
-                    expected_table_count = print_type_obj.table_count
-                elif "handrawn" in print_type_str.lower():
-                    pass  # Keep expected_table_count as -1
-
-                # Check for wrong number of tables on the page
-                if expected_table_count != -1 and len(tables) != expected_table_count:
-                    book_stats["num_pages_wrong_table_count"] += 1
-                    page_has_wrong_table_count = True  # Set flag for this page
-                    if len(tables) > expected_table_count:
-                        book_stats["num_pages_more_tables_than_expected"] += 1
-                    else:  # len(tables) < expected_table_count
-                        book_stats["num_pages_fewer_tables_than_expected"] += 1
-
-                for table_index, table in enumerate(
-                    tables
-                ):  # Use enumerate for potential index-based logic if needed later
-                    book_stats["num_tables_total"] += 1
-                    actual_cols = 0  # Initialize
-                    # Ensure table.data is a DataFrame before accessing shape
-                    if isinstance(table.data, pd.DataFrame) and not table.data.empty:
-                        actual_cols = table.data.shape[1]
-                        rows = table.data.shape[0]
-                        book_stats["num_columns_total"] += actual_cols
-                        book_stats["num_rows_total"] += rows
-                        book_col_counts.append(actual_cols)  # Store for median
-                        book_row_counts.append(rows)  # Store for median
-                    else:
-                        logging.warning(
-                            f"Table data is not a valid DataFrame in {xml_file_path.name}, table ID {table.id}. Skipping shape calculation for book stats."
-                        )
-                        # Still count the table if it exists, but column/row counts are 0/unknown
-                        book_col_counts.append(0)
-                        book_row_counts.append(0)
-
-                    if is_printed and print_type_obj:
-                        book_stats["num_tables_printed"] += 1
-
-                        # Check for incorrect column count only if the number of tables was as expected
-                        # or if table count wasn't checked (-1). Also requires valid DataFrame.
-                        if (
-                            (
-                                not page_has_wrong_table_count
-                                or expected_table_count == -1
-                            )
-                            and isinstance(table.data, pd.DataFrame)
-                            and not table.data.empty
-                        ):
-                            expected_cols = -1  # Default if not found
-
-                            if expected_table_count == 1:
-                                if print_type_obj.table_annotations:
-                                    expected_cols = print_type_obj.table_annotations[
-                                        0
-                                    ].number_of_columns
-                                else:
-                                    logging.warning(
-                                        f"Print type {print_type_str} has expected_table_count=1 but no table_annotations defined."
-                                    )
-                            elif expected_table_count == 2:
-                                # Sort tables by horizontal position to match left/right annotations
-                                tables.sort(key=lambda t: t.rect.x)
-                                if (
-                                    len(tables) == 2
-                                ):  # Ensure we still have 2 tables after sorting
-                                    left_annotation: TableAnnotation | None = None
-                                    right_annotation: TableAnnotation | None = None
-                                    for ann in print_type_obj.table_annotations:
-                                        if ann.page == "left":
-                                            left_annotation = ann
-                                        elif ann.page == "right":
-                                            right_annotation = ann
-
-                                    # Determine if the current table is left or right based on index after sorting
-                                    if (
-                                        table_index == 0 and left_annotation
-                                    ):  # Current table is the leftmost one
-                                        expected_cols = (
-                                            left_annotation.number_of_columns
-                                        )
-                                    elif ann.page == "right":
-                                        right_annotation = ann
-
-                                    # Determine if the current table is left or right based on index after sorting
-                                    if (
-                                        table_index == 0 and left_annotation
-                                    ):  # Current table is the leftmost one
-                                        expected_cols = (
-                                            left_annotation.number_of_columns
-                                        )
-                                    elif (
-                                        table_index == 1 and right_annotation
-                                    ):  # Current table is the rightmost one
-                                        expected_cols = (
-                                            right_annotation.number_of_columns
-                                        )
-                                    else:
-                                        logging.warning(
-                                            f"Could not match table index {table_index} to left/right annotation in {xml_file_path.name}"
-                                        )
-                                else:
-                                    # This case should ideally be caught by page_has_wrong_table_count, but log just in case
-                                    logging.warning(
-                                        f"Expected 2 tables but found {len(tables)} after sorting in {xml_file_path.name} while checking columns."
-                                    )
-
-                            # Now compare actual vs expected columns if expected_cols was determined
-                            if expected_cols != -1 and actual_cols != expected_cols:
-                                book_stats["num_printed_tables_wrong_cols"] += 1
-                                if actual_cols > expected_cols:
-                                    book_stats[
-                                        "num_printed_tables_more_cols_than_expected"
-                                    ] += 1
-                                else:  # actual_cols < expected_cols
-                                    book_stats[
-                                        "num_printed_tables_fewer_cols_than_expected"
-                                    ] += 1
-
-                    else:  # Handwritten table
-                        book_stats["num_tables_handwritten"] += 1
-
-            # --- Calculate medians and percentages for the book ---
-            if book_col_counts:
-                book_stats["median_columns_per_table"] = statistics.median(
-                    book_col_counts
-                )
-            else:
-                book_stats["median_columns_per_table"] = np.nan  # Use NaN if no tables
-
-            if book_row_counts:
-                book_stats["median_rows_per_table"] = statistics.median(book_row_counts)
-            else:
-                book_stats["median_rows_per_table"] = np.nan  # Use NaN if no tables
-
-            # Calculate percentages for table count discrepancies
-            if book_stats["num_xml_files"] > 0:
-                book_stats["perc_pages_wrong_table_count"] = (
-                    book_stats["num_pages_wrong_table_count"]
-                    / book_stats["num_xml_files"]
-                )
-                book_stats["perc_pages_more_tables_than_expected"] = (
-                    book_stats["num_pages_more_tables_than_expected"]
-                    / book_stats["num_xml_files"]
-                )
-                book_stats["perc_pages_fewer_tables_than_expected"] = (
-                    book_stats["num_pages_fewer_tables_than_expected"]
-                    / book_stats["num_xml_files"]
-                )
-            else:
-                book_stats["perc_pages_wrong_table_count"] = np.nan
-                book_stats["perc_pages_more_tables_than_expected"] = np.nan
-                book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
-
-            # Calculate percentages for column count discrepancies (based on printed tables)
-            if book_stats["num_tables_printed"] > 0:
-                book_stats["perc_printed_tables_wrong_cols"] = (
-                    book_stats["num_printed_tables_wrong_cols"]
-                    / book_stats["num_tables_printed"]
-                )
-                book_stats["perc_printed_tables_more_cols_than_expected"] = (
-                    book_stats["num_printed_tables_more_cols_than_expected"]
-                    / book_stats["num_tables_printed"]
-                )
-                book_stats["perc_printed_tables_fewer_cols_than_expected"] = (
-                    book_stats["num_printed_tables_fewer_cols_than_expected"]
-                    / book_stats["num_tables_printed"]
-                )
-            else:
-                # If no printed tables, percentages are NaN if counts > 0, else 0.0
-                book_stats["perc_printed_tables_wrong_cols"] = (
-                    np.nan if book_stats["num_printed_tables_wrong_cols"] > 0 else 0.0
-                )
-                book_stats["perc_printed_tables_more_cols_than_expected"] = (
-                    np.nan
-                    if book_stats["num_printed_tables_more_cols_than_expected"] > 0
-                    else 0.0
-                )
-                book_stats["perc_printed_tables_fewer_cols_than_expected"] = (
-                    np.nan
-                    if book_stats["num_printed_tables_fewer_cols_than_expected"] > 0
-                    else 0.0
-                )
-
-            all_book_stats.append(book_stats)
-
-    stats_df = pd.DataFrame(all_book_stats)
+    stats_df = pd.DataFrame(all_book_stats_list)
     # Reorder columns for better readability, including new detailed ones
+    # Define columns explicitly to handle cases where stats_df might be empty
+    expected_columns = [
+        "parish",
+        "book_id",
+        "num_xml_files",
+        "num_tables_total",
+        "num_tables_printed",
+        "num_tables_handwritten",
+        "num_columns_total",
+        "median_columns_per_table",
+        "num_rows_total",
+        "median_rows_per_table",
+        "num_pages_wrong_table_count",
+        "perc_pages_wrong_table_count",
+        "num_pages_more_tables_than_expected",
+        "perc_pages_more_tables_than_expected",
+        "num_pages_fewer_tables_than_expected",
+        "perc_pages_fewer_tables_than_expected",
+        "num_printed_tables_wrong_cols",
+        "perc_printed_tables_wrong_cols",
+        "num_printed_tables_more_cols_than_expected",
+        "perc_printed_tables_more_cols_than_expected",
+        "num_printed_tables_fewer_cols_than_expected",
+        "perc_printed_tables_fewer_cols_than_expected",
+    ]
+
     if not stats_df.empty:
-        stats_df = stats_df[
-            [
-                "parish",
-                "book_id",
-                "num_xml_files",
-                "num_tables_total",
-                "num_tables_printed",
-                "num_tables_handwritten",
-                "num_columns_total",
-                "median_columns_per_table",
-                "num_rows_total",
-                "median_rows_per_table",
-                "num_pages_wrong_table_count",
-                "perc_pages_wrong_table_count",
-                "num_pages_more_tables_than_expected",
-                "perc_pages_more_tables_than_expected",
-                "num_pages_fewer_tables_than_expected",
-                "perc_pages_fewer_tables_than_expected",
-                "num_printed_tables_wrong_cols",
-                "perc_printed_tables_wrong_cols",
-                "num_printed_tables_more_cols_than_expected",
-                "perc_printed_tables_more_cols_than_expected",
-                "num_printed_tables_fewer_cols_than_expected",
-                "perc_printed_tables_fewer_cols_than_expected",
-            ]
-        ]
+        # Ensure all expected columns exist, adding missing ones with NaN
+        for col in expected_columns:
+            if col not in stats_df.columns:
+                stats_df[col] = np.nan
+        stats_df = stats_df[expected_columns]  # Reorder/select columns
     # If empty, create DataFrame with correct columns but no rows
     else:
-        stats_df = pd.DataFrame(
-            columns=[
-                "parish",
-                "book_id",
-                "num_xml_files",
-                "num_tables_total",
-                "num_tables_printed",
-                "num_tables_handwritten",
-                "num_columns_total",
-                "median_columns_per_table",
-                "num_rows_total",
-                "median_rows_per_table",
-                "num_pages_wrong_table_count",
-                "perc_pages_wrong_table_count",
-                "num_pages_more_tables_than_expected",
-                "perc_pages_more_tables_than_expected",
-                "num_pages_fewer_tables_than_expected",
-                "perc_pages_fewer_tables_than_expected",
-                "num_printed_tables_wrong_cols",
-                "perc_printed_tables_wrong_cols",
-                "num_printed_tables_more_cols_than_expected",
-                "perc_printed_tables_more_cols_than_expected",
-                "num_printed_tables_fewer_cols_than_expected",
-                "perc_printed_tables_fewer_cols_than_expected",
-            ]
-        )
+        stats_df = pd.DataFrame(columns=expected_columns)
 
     return stats_df
 
@@ -633,6 +651,9 @@ def find_first_dir_with_multiple_files(path: Path) -> Path:
 
 
 if __name__ == "__main__":
+
+    # Usage: python descriptive_stats.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --xml-source pageTextClassified
+
     parser = argparse.ArgumentParser(
         description="Generate descriptive statistics for HTR table data."
     )
@@ -667,6 +688,12 @@ if __name__ == "__main__":
         choices=["pagePostprocessed", "pageTextClassified"],
         help="The subdirectory within each book containing the XML files to process (default: pageTextClassified).",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,  # Default to None, Pool will use os.cpu_count()
+        help="Number of worker processes to use for parallel processing. Defaults to the number of CPU cores.",
+    )
 
     args = parser.parse_args()
 
@@ -678,6 +705,7 @@ if __name__ == "__main__":
         [p for p in args.parishes.split(",") if p] if args.parishes else None
     )
     xml_source_choice = args.xml_source
+    num_workers = args.workers  # Get number of workers from args
 
     if not annotations_file.is_file():
         logging.error(f"Annotations file not found: {annotations_file}")
@@ -708,18 +736,16 @@ if __name__ == "__main__":
                 extracted_data_dir,
                 annotations_file,
                 xml_source=xml_source_choice,
+                num_workers=num_workers,  # Pass num_workers
             )
             if not per_book_stats.empty:
                 percent_cols_book = [
                     col for col in per_book_stats.columns if col.startswith("perc_")
                 ]
-                per_book_stats[percent_cols_book] = per_book_stats[
+                # Use .loc to avoid SettingWithCopyWarning
+                per_book_stats.loc[:, percent_cols_book] = per_book_stats[
                     percent_cols_book
-                ].round(2)
-                median_cols = [
-                    col for col in per_book_stats.columns if col.startswith("median_")
-                ]
-                per_book_stats[median_cols] = per_book_stats[median_cols].round(1)
+                ].round(4)
 
                 print(per_book_stats.to_string())
                 try:
@@ -742,9 +768,9 @@ if __name__ == "__main__":
                         for col in per_parish_stats.columns
                         if col.startswith("perc_")
                     ]
-                    per_parish_stats[percent_cols_parish] = per_parish_stats[
+                    per_parish_stats.loc[:, percent_cols_parish] = per_parish_stats[
                         percent_cols_parish
-                    ].round(2)
+                    ].round(4)
                     print(per_parish_stats.to_string())
                     try:
                         output_filename_parish = (
@@ -768,9 +794,9 @@ if __name__ == "__main__":
                     percent_cols_total = [
                         col for col in total_stats.columns if col.startswith("perc_")
                     ]
-                    total_stats[percent_cols_total] = total_stats[
+                    total_stats.loc[:, percent_cols_total] = total_stats[
                         percent_cols_total
-                    ].round(2)
+                    ].round(4)
                     print(total_stats.to_string())
                     try:
                         output_filename_total = (
