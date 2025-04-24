@@ -1,21 +1,21 @@
 import argparse
 import logging
-from pathlib import Path
-import sys
-from typing import Literal
-import pandas as pd
-import statistics
-import numpy as np
-from tqdm import tqdm
 import multiprocessing
-from functools import partial
+import statistics
+import sys
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+import pandas as pd
 
 sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
 
 from metadata import get_parish_books_from_annotations, read_layout_annotations
-from table_types import ParishBook, PrintType, TableAnnotation
-from utilities.temp_unzip import TempExtractedData
+from table_types import ParishBook, PrintType
 from xml_utils import extract_datatables_from_xml
+
+from utilities.temp_unzip import TempExtractedData
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -122,7 +122,7 @@ def _process_single_book(
 
             try:
                 print_type_str = current_parish_book.get_type_for_opening(opening)
-                if not "print" in print_type_str:
+                if "print" not in print_type_str:
                     print_type_obj = None
                     is_printed = False
                 else:
@@ -651,7 +651,6 @@ def find_first_dir_with_multiple_files(path: Path) -> Path:
 
 
 if __name__ == "__main__":
-
     # Usage: python descriptive_stats.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --xml-source pageTextClassified
 
     parser = argparse.ArgumentParser(

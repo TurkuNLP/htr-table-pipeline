@@ -124,12 +124,12 @@ def postprocess_handrawn(
     The aim is to figure out what data is stored in whatever columns
     """
     for jpg_path, tables in data.items():
-        opening_id = int(jpg_path.stem.split("_")[-1])
-        table_count = len(tables)
+        _opening_id = int(jpg_path.stem.split("_")[-1])
+        _table_count = len(tables)
 
         # Remove extra tables
         tables = remove_overlapping_tables(tables)
-        table_count = len(tables)
+        _table_count = len(tables)
 
         if dspy.settings.get("lm"):
             for i, table in enumerate(tables):
@@ -196,7 +196,7 @@ def postprocess(
         # Or are they...?
         # Anyways a quick estimate for all the dataframes in memory is around 10gb for the full dataset
         # TODO expose as cmd arg
-        data: dict[Path, dict[str, dict[Path, list[Datatable]]]] = {}
+        _data: dict[Path, dict[str, dict[Path, list[Datatable]]]] = {}
 
         # Gather all the book dirs
         book_dirs: list[Path] = []
@@ -287,7 +287,7 @@ def postprocess_book(
         with open(xml_path, "rt", encoding="utf-8") as xml_file:
             tables = extract_datatables_from_xml(xml_file)
 
-        if not book.get_type_for_opening(opening_id) in book_data.keys():
+        if book.get_type_for_opening(opening_id) not in book_data.keys():
             book_data[book.get_type_for_opening(opening_id)] = {}
         book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
 

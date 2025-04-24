@@ -1,12 +1,11 @@
 import argparse
 import os
-from pathlib import Path
 import random
 import sys
-from dotenv import load_dotenv
-import dspy
-import pandas as pd
+from pathlib import Path
 
+import dspy
+from dotenv import load_dotenv
 from metadata import get_print_type_for_jpg
 from table_types import CellData, Datatable
 from tables_fix import remove_overlapping_tables
@@ -34,7 +33,10 @@ def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     # Initialize the ReAct agent
     instructions = """Modify the table so that it best matches the headers. Ensure that the name column (or equivalent) is at the correct position. The tables are sourced from 1800s Finnish church documents and may contain HTR errors."""
 
-    signature = dspy.Signature("table: str, headers: list[str] -> successful: bool", instructions)  # type: ignore
+    signature = dspy.Signature(
+        "table: str, headers: list[str] -> successful: bool",  # type: ignore
+        instructions,
+    )
     react = dspy.ReAct(
         signature,
         tools=[
@@ -46,7 +48,7 @@ def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     )
 
     # Run the ReAct agent
-    res = react(
+    _res = react(
         table=table_mod.get_table_head(),
         headers=translated_headers,
     )
@@ -138,7 +140,6 @@ class TableModification:
 
 
 if __name__ == "__main__":
-
     # cmd args stuff
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True, help="Path to jpg file")

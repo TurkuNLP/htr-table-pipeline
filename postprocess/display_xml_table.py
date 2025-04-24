@@ -1,15 +1,9 @@
 import argparse
 from pathlib import Path
 
-from tqdm import tqdm
-
-from tables_fix import remove_overlapping_tables
 from xml_utils import extract_datatables_from_xml
-from table_types import Datatable
-
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True, help="Path to jpg file")
 

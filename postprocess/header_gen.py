@@ -1,14 +1,12 @@
 import os
-from pathlib import Path
-from typing import Literal, Optional
-from dotenv import load_dotenv
-import dspy
-import pandas as pd
-from tqdm import tqdm
 import random
+from pathlib import Path
 
+import dspy
+from dotenv import load_dotenv
 from table_types import Datatable
 from tables_fix import remove_overlapping_tables
+from tqdm import tqdm
 from xml_utils import extract_datatables_from_xml
 
 

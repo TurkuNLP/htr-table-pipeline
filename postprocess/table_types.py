@@ -118,7 +118,7 @@ class Datatable:
         """
         try:
             return self.data.map(lambda cell: cell.text)
-        except:
+        except Exception as _:
             print(self.data)
             raise ValueError("DataFrame does not contain cell data.")
 
@@ -145,7 +145,7 @@ class ParishBook:
         """
         Returns a unique folder id for the parish book. E.g. "ahlainen_muuttaneet_1900-1910_ap"
         """
-        return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.split("_")[-1].lower()}"
+        return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.split('_')[-1].lower()}"
 
     def get_type_for_opening(self: "ParishBook", opening: int) -> str:
         """

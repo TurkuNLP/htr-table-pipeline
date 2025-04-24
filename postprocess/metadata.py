@@ -1,8 +1,7 @@
 from pathlib import Path
+
 import openpyxl
-
-from table_types import ParishBook, TableAnnotation, PrintType
-
+from table_types import ParishBook, PrintType, TableAnnotation
 
 # Functions for reading metadata from the annotations excel file
 
