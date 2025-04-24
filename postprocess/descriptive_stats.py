@@ -722,8 +722,8 @@ if __name__ == "__main__":
     try:
         # Use a single context manager for unzipping
         with TempExtractedData(
-            input_dir, parishes_list, working_dir_arg
-        ) as extracted_data_dir:  # Pass working_dir_arg
+            input_dir, parishes_list, override_temp_dir=working_dir_arg
+        ) as extracted_data_dir:
             if not extracted_data_dir or not any(extracted_data_dir.iterdir()):
                 logging.error(
                     f"Extracted data directory is empty or could not be created: {extracted_data_dir}"
