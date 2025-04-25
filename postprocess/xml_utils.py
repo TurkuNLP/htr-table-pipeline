@@ -314,17 +314,35 @@ def create_handrawn_annotations(
     """
     handrawn_tables: list[Datatable] = []
     for datatable in datatables:
-        if datatable.data.columns[0] is str:
+        if "print" not in datatable.print_type:  # type: ignore
             handrawn_tables.append(datatable)
 
-    logger.warning("Handrawn annotation file creation not implemented yet.")
-    # TODO unfinished, create a jsonlines file in outputpath with the table headers
+    with open(handrawn_annotation_output_path / "handrawn_annotations.jsonl", "a") as f:
+        for datatable in handrawn_tables:
+            # Create a dictionary to store the table data
+            table_data = {
+                "table_id": datatable.id,
+                "headers": datatable.data.columns.tolist(),
+            }
+            # Write the table data to the file in JSON format
+            f.write(f"{table_data}\n")
 
 
-def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> None:
+def book_create_updated_xml(
+    book_path: Path, book_data: dict[str, list[Datatable]]
+) -> None:
     """
     Creates updated xml files into book_path/pagePostprocessed/.
     """
+
+    datatables: list[Datatable] = []
+    for print_type_str, datatable_list in book_data.items():
+        for datatable in datatable_list:
+            datatables.append(datatable)
+
+            # Create a new print_type attribute for each datatable....
+            # I hate doing this but it was the quickest way to get it working
+            datatable.print_type = print_type_str  # type: ignore
 
     source_dir = book_path / "pageTextClassified"
     output_dir = book_path / "pagePostprocessed"
@@ -352,6 +370,7 @@ def book_create_updated_xml(book_path: Path, datatables: list[Datatable]) -> Non
             create_updated_xml_file(
                 source_xml_path, output_xml_path, file_datatables[source_xml_path.name]
             )
+
             create_handrawn_annotations(
                 handrawn_annotation_output_path, file_datatables[source_xml_path.name]
             )

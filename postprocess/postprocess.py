@@ -273,7 +273,8 @@ def postprocess(
 
         # Process the books in parallel
         process_map_args = [
-            (printed_types, parish_books_mapping, book_dir) for book_dir in book_dirs
+            (printed_types, parish_books_mapping, book_dir, model, llm_url)
+            for book_dir in book_dirs
         ]
 
         for book_dir, book_data in tqdm(
@@ -286,10 +287,18 @@ def postprocess(
             assert isinstance(book, ParishBook)
             book_data = cast(dict[str, dict[Path, list[Datatable]]], book_data)
             all_datatables: list[Datatable] = []
-            for book_title, path_datatables_mapping in book_data.items():
+            for print_type_str, path_datatables_mapping in book_data.items():
                 for path, datatables in path_datatables_mapping.items():
                     all_datatables.extend(datatables)
-            book_create_updated_xml(book_dir, all_datatables)
+
+            restructured_book_data: dict[str, list[Datatable]] = {}
+            for print_type_str, path_datatables_mapping in book_data.items():
+                if print_type_str not in restructured_book_data.keys():
+                    restructured_book_data[print_type_str] = []
+                for path, datatables in path_datatables_mapping.items():
+                    restructured_book_data[print_type_str].extend(datatables)
+
+            book_create_updated_xml(book_dir, restructured_book_data)
 
 
 def postprocess_book_parallel_wrapper(
@@ -297,15 +306,19 @@ def postprocess_book_parallel_wrapper(
         dict[str, PrintType],  # print_type_str -> PrintType
         dict[str, ParishBook],  # book_folder_id -> ParishBook
         Path,  # book_dir
+        str,  # model
+        str,  # llm_url
     ],
 ) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
-    return postprocess_book(args[0], args[1], args[2])
+    return postprocess_book(args[0], args[1], args[2], args[3], args[4])
 
 
 def postprocess_book(
     printed_types: dict[str, PrintType],
     parish_books_mapping: dict[str, ParishBook],
     book_dir: Path,
+    model: str,
+    llm_url: str,
 ) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
     """
     Postprocess a single book. Called on a separate process using `process_map`.
@@ -318,6 +331,18 @@ def postprocess_book(
     Returns:
     tuple[book path, dict[print_type_str, dict[jpeg_path, list[Datatable]]]] - The book and the data for the book
     """
+
+    # Configure dspy (separate process so needs to be done here...)
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        load_dotenv(env_file)
+    if model != "":
+        lm = dspy.LM(
+            model,
+            api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
+            api_base=llm_url,
+        )
+        dspy.configure(lm=lm)
 
     jpg_paths = list(book_dir.rglob("*.jpg"))
 
