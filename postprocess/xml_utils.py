@@ -1,9 +1,14 @@
+import logging
 import xml.etree.ElementTree as ET
 from io import TextIOWrapper
 from pathlib import Path
 
 import pandas as pd
 from table_types import CellData, Datatable, Rect
+
+
+logger = logging.getLogger(__name__)
+
 
 namespace = {"ns": "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
 
@@ -312,7 +317,7 @@ def create_handrawn_annotations(
         if datatable.data.columns[0] is str:
             handrawn_tables.append(datatable)
 
-    raise NotImplementedError("Handrawn annotation file not implemented yet")
+    logger.warning("Handrawn annotation file creation not implemented yet.")
     # TODO unfinished, create a jsonlines file in outputpath with the table headers
 
 
