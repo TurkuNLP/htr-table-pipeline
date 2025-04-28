@@ -373,7 +373,7 @@ def descriptive_stats_per_book(
         if not parish_dir.is_dir():
             continue
 
-        dir_with_books = find_first_dir_with_multiple_files(parish_dir)
+        dir_with_books = get_dir_with_books(parish_dir)
         if not dir_with_books or not any(dir_with_books.iterdir()):
             logging.warning(
                 f"No book directories found in {parish_dir}, skipping parish."
@@ -681,16 +681,11 @@ def aggregate_stats_total(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
     return total_stats
 
 
-def find_first_dir_with_multiple_files(path: Path) -> Path:
-    for entry in path.iterdir():
-        if entry.is_dir() and len(list(entry.iterdir())) > 1:
-            return entry
-        elif entry.is_dir():
-            result = find_first_dir_with_multiple_files(entry)
-            if result:
-                return result
-    assert path is not None
-    return path
+def get_dir_with_books(parish_path: Path) -> Path:
+    """
+    Gets books dir path from parish path, e.g. autods_helsinki/ -> autods_helsinki/images/helsinki/
+    """
+    return list(list(parish_path.glob("*"))[0].glob("*"))[0]
 
 
 if __name__ == "__main__":

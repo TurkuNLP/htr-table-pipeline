@@ -249,15 +249,6 @@ def postprocess(
             parish_books_mapping[book.folder_id()] = book
 
         # Find first dir with multiple files within
-        def find_first_dir_with_multiple_files(path: Path) -> Path:
-            for entry in path.iterdir():
-                if entry.is_dir() and len(list(entry.iterdir())) > 1:
-                    return entry
-                elif entry.is_dir():
-                    result = find_first_dir_with_multiple_files(entry)
-                    if result:
-                        return result
-            return path
 
         # Initialize LM
 
