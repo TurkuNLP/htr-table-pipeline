@@ -5,6 +5,7 @@ import statistics
 import sys
 from pathlib import Path
 from typing import Literal
+from tqdm.contrib.concurrent import process_map
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,16 @@ from utilities.temp_unzip import TempExtractedData
 
 
 logger = logging.getLogger(__name__)
+
+
+def _process_single_book_tuple_wrapper(
+    args: tuple[Path, str, dict[str, ParishBook], dict[str, PrintType], str],
+) -> dict | None:
+    """
+    Wrapper function to unpack arguments for multiprocessing.
+    This is necessary because starmap does not support passing a tuple directly.
+    """
+    return _process_single_book(*args)
 
 
 def _process_single_book(
@@ -400,11 +411,18 @@ def descriptive_stats_per_book(
 
     # Use multiprocessing Pool
     # If num_workers is None, Pool defaults to os.cpu_count()
-    with multiprocessing.Pool(processes=num_workers) as pool:
-        # Use starmap to pass multiple arguments from the tuples in books_to_process
-        results = list(
-            pool.starmap(_process_single_book, books_to_process),
+    # with multiprocessing.Pool(processes=num_workers) as pool:
+    #     # Use starmap to pass multiple arguments from the tuples in books_to_process
+    #     results = list(
+    #         pool.starmap(_process_single_book, books_to_process),
+    #     )
+
+    results = list(
+        process_map(
+            _process_single_book_tuple_wrapper,
+            [args for args in books_to_process],
         )
+    )
 
     # Filter out None results (from books that failed processing)
     all_book_stats_list = [stats for stats in results if stats is not None]
