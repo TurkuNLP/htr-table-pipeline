@@ -56,12 +56,14 @@ def _process_single_book(
             "median_columns_per_table": 0.0,
             "num_rows_total": 0.0,
             "median_rows_per_table": 0.0,
-            "num_pages_wrong_table_count": 0,
-            "num_pages_more_tables_than_expected": 0,
-            "num_pages_fewer_tables_than_expected": 0,
-            "perc_pages_wrong_table_count": 0.0,
-            "perc_pages_more_tables_than_expected": 0.0,
-            "perc_pages_fewer_tables_than_expected": 0.0,
+            "num_pages_zero_tables": 0,  # New stat
+            "num_pages_wrong_non_zero_table_count": 0,  # Renamed stat
+            "num_pages_more_tables_than_expected_non_zero": 0,  # Renamed stat
+            "num_pages_fewer_tables_than_expected_non_zero": 0,  # Renamed stat
+            "perc_pages_zero_tables": 0.0,  # New stat
+            "perc_pages_wrong_non_zero_table_count": 0.0,  # Renamed stat
+            "perc_pages_more_tables_than_expected_non_zero": 0.0,  # Renamed stat
+            "perc_pages_fewer_tables_than_expected_non_zero": 0.0,  # Renamed stat
             "num_printed_tables_wrong_cols": 0,
             "num_printed_tables_more_cols_than_expected": 0,
             "num_printed_tables_fewer_cols_than_expected": 0,
@@ -80,9 +82,10 @@ def _process_single_book(
             # Ensure medians/percentages are NaN or 0 if no data
             book_stats["median_columns_per_table"] = np.nan
             book_stats["median_rows_per_table"] = np.nan
-            book_stats["perc_pages_wrong_table_count"] = np.nan
-            book_stats["perc_pages_more_tables_than_expected"] = np.nan
-            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+            book_stats["perc_pages_zero_tables"] = np.nan
+            book_stats["perc_pages_wrong_non_zero_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected_non_zero"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected_non_zero"] = np.nan
             book_stats["perc_printed_tables_wrong_cols"] = np.nan
             book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
             book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
@@ -96,9 +99,10 @@ def _process_single_book(
             # Ensure medians/percentages are NaN or 0 if no data
             book_stats["median_columns_per_table"] = np.nan
             book_stats["median_rows_per_table"] = np.nan
-            book_stats["perc_pages_wrong_table_count"] = np.nan
-            book_stats["perc_pages_more_tables_than_expected"] = np.nan
-            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+            book_stats["perc_pages_zero_tables"] = np.nan
+            book_stats["perc_pages_wrong_non_zero_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected_non_zero"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected_non_zero"] = np.nan
             book_stats["perc_printed_tables_wrong_cols"] = np.nan
             book_stats["perc_printed_tables_more_cols_than_expected"] = np.nan
             book_stats["perc_printed_tables_fewer_cols_than_expected"] = np.nan
@@ -155,13 +159,19 @@ def _process_single_book(
             # No need for elif "handrawn", default is -1
 
             # Check for wrong number of tables on the page
-            if expected_table_count != -1 and len(tables) != expected_table_count:
-                book_stats["num_pages_wrong_table_count"] += 1
-                page_has_wrong_table_count = True  # Set flag for this page
-                if len(tables) > expected_table_count:
-                    book_stats["num_pages_more_tables_than_expected"] += 1
-                else:  # len(tables) < expected_table_count
-                    book_stats["num_pages_fewer_tables_than_expected"] += 1
+            if expected_table_count != -1:  # Only check if we have an expectation
+                if len(tables) == 0 and expected_table_count != 0:
+                    # Page has zero tables when it shouldn't
+                    book_stats["num_pages_zero_tables"] += 1
+                    # Don't set page_has_wrong_table_count here, as it's used for column checks later
+                elif len(tables) != expected_table_count and len(tables) > 0:
+                    # Page has a non-zero, but incorrect number of tables
+                    book_stats["num_pages_wrong_non_zero_table_count"] += 1
+                    page_has_wrong_table_count = True  # Set flag for this page
+                    if len(tables) > expected_table_count:
+                        book_stats["num_pages_more_tables_than_expected_non_zero"] += 1
+                    else:  # len(tables) < expected_table_count
+                        book_stats["num_pages_fewer_tables_than_expected_non_zero"] += 1
 
             # Sort tables by horizontal position early if needed for 2-table layouts
             if is_printed and print_type_obj and print_type_obj.table_count == 2:
@@ -191,6 +201,7 @@ def _process_single_book(
 
                     # Check for incorrect column count only if the number of tables was as expected
                     # or if table count wasn't checked (-1). Also requires valid DataFrame.
+                    # Crucially, page_has_wrong_table_count should NOT be set if the only issue was zero tables.
                     if (
                         (not page_has_wrong_table_count or expected_table_count == -1)
                         and isinstance(table.data, pd.DataFrame)
@@ -265,21 +276,26 @@ def _process_single_book(
 
         # Calculate percentages for table count discrepancies
         if book_stats["num_xml_files"] > 0:
-            book_stats["perc_pages_wrong_table_count"] = (
-                book_stats["num_pages_wrong_table_count"] / book_stats["num_xml_files"]
+            book_stats["perc_pages_zero_tables"] = (
+                book_stats["num_pages_zero_tables"] / book_stats["num_xml_files"]
             )
-            book_stats["perc_pages_more_tables_than_expected"] = (
-                book_stats["num_pages_more_tables_than_expected"]
+            book_stats["perc_pages_wrong_non_zero_table_count"] = (
+                book_stats["num_pages_wrong_non_zero_table_count"]
                 / book_stats["num_xml_files"]
             )
-            book_stats["perc_pages_fewer_tables_than_expected"] = (
-                book_stats["num_pages_fewer_tables_than_expected"]
+            book_stats["perc_pages_more_tables_than_expected_non_zero"] = (
+                book_stats["num_pages_more_tables_than_expected_non_zero"]
+                / book_stats["num_xml_files"]
+            )
+            book_stats["perc_pages_fewer_tables_than_expected_non_zero"] = (
+                book_stats["num_pages_fewer_tables_than_expected_non_zero"]
                 / book_stats["num_xml_files"]
             )
         else:
-            book_stats["perc_pages_wrong_table_count"] = np.nan
-            book_stats["perc_pages_more_tables_than_expected"] = np.nan
-            book_stats["perc_pages_fewer_tables_than_expected"] = np.nan
+            book_stats["perc_pages_zero_tables"] = np.nan
+            book_stats["perc_pages_wrong_non_zero_table_count"] = np.nan
+            book_stats["perc_pages_more_tables_than_expected_non_zero"] = np.nan
+            book_stats["perc_pages_fewer_tables_than_expected_non_zero"] = np.nan
 
         # Calculate percentages for column count discrepancies (based on printed tables)
         if book_stats["num_tables_printed"] > 0:
@@ -411,12 +427,14 @@ def descriptive_stats_per_book(
         "median_columns_per_table",
         "num_rows_total",
         "median_rows_per_table",
-        "num_pages_wrong_table_count",
-        "perc_pages_wrong_table_count",
-        "num_pages_more_tables_than_expected",
-        "perc_pages_more_tables_than_expected",
-        "num_pages_fewer_tables_than_expected",
-        "perc_pages_fewer_tables_than_expected",
+        "num_pages_zero_tables",  # New
+        "perc_pages_zero_tables",  # New
+        "num_pages_wrong_non_zero_table_count",  # Renamed
+        "perc_pages_wrong_non_zero_table_count",  # Renamed
+        "num_pages_more_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_more_tables_than_expected_non_zero",  # Renamed
+        "num_pages_fewer_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_fewer_tables_than_expected_non_zero",  # Renamed
         "num_printed_tables_wrong_cols",
         "perc_printed_tables_wrong_cols",
         "num_printed_tables_more_cols_than_expected",
@@ -451,9 +469,10 @@ def aggregate_stats_per_parish(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
         "num_tables_handwritten",
         "num_columns_total",
         "num_rows_total",
-        "num_pages_wrong_table_count",
-        "num_pages_more_tables_than_expected",
-        "num_pages_fewer_tables_than_expected",
+        "num_pages_zero_tables",  # New
+        "num_pages_wrong_non_zero_table_count",  # Renamed
+        "num_pages_more_tables_than_expected_non_zero",  # Renamed
+        "num_pages_fewer_tables_than_expected_non_zero",  # Renamed
         "num_printed_tables_wrong_cols",
         "num_printed_tables_more_cols_than_expected",
         "num_printed_tables_fewer_cols_than_expected",
@@ -464,26 +483,36 @@ def aggregate_stats_per_parish(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
 
     # Recalculate percentages based on summed counts
     # Avoid division by zero using np.where
-    parish_stats["perc_pages_wrong_table_count"] = np.where(
+    parish_stats["perc_pages_zero_tables"] = np.where(  # New
         parish_stats["num_xml_files"] > 0,
-        (parish_stats["num_pages_wrong_table_count"] / parish_stats["num_xml_files"]),
+        (parish_stats["num_pages_zero_tables"] / parish_stats["num_xml_files"]),
         np.nan,
     )
-    parish_stats["perc_pages_more_tables_than_expected"] = np.where(
+    parish_stats["perc_pages_wrong_non_zero_table_count"] = np.where(  # Renamed
         parish_stats["num_xml_files"] > 0,
         (
-            parish_stats["num_pages_more_tables_than_expected"]
+            parish_stats["num_pages_wrong_non_zero_table_count"]
             / parish_stats["num_xml_files"]
         ),
         np.nan,
     )
-    parish_stats["perc_pages_fewer_tables_than_expected"] = np.where(
+    parish_stats["perc_pages_more_tables_than_expected_non_zero"] = np.where(  # Renamed
         parish_stats["num_xml_files"] > 0,
         (
-            parish_stats["num_pages_fewer_tables_than_expected"]
+            parish_stats["num_pages_more_tables_than_expected_non_zero"]
             / parish_stats["num_xml_files"]
         ),
         np.nan,
+    )
+    parish_stats["perc_pages_fewer_tables_than_expected_non_zero"] = (
+        np.where(  # Renamed
+            parish_stats["num_xml_files"] > 0,
+            (
+                parish_stats["num_pages_fewer_tables_than_expected_non_zero"]
+                / parish_stats["num_xml_files"]
+            ),
+            np.nan,
+        )
     )
     parish_stats["perc_printed_tables_wrong_cols"] = np.where(
         parish_stats["num_tables_printed"] > 0,
@@ -519,12 +548,14 @@ def aggregate_stats_per_parish(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
         "num_tables_handwritten",
         "num_columns_total",
         "num_rows_total",
-        "num_pages_wrong_table_count",
-        "perc_pages_wrong_table_count",
-        "num_pages_more_tables_than_expected",
-        "perc_pages_more_tables_than_expected",
-        "num_pages_fewer_tables_than_expected",
-        "perc_pages_fewer_tables_than_expected",
+        "num_pages_zero_tables",  # New
+        "perc_pages_zero_tables",  # New
+        "num_pages_wrong_non_zero_table_count",  # Renamed
+        "perc_pages_wrong_non_zero_table_count",  # Renamed
+        "num_pages_more_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_more_tables_than_expected_non_zero",  # Renamed
+        "num_pages_fewer_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_fewer_tables_than_expected_non_zero",  # Renamed
         "num_printed_tables_wrong_cols",
         "perc_printed_tables_wrong_cols",
         "num_printed_tables_more_cols_than_expected",
@@ -550,9 +581,10 @@ def aggregate_stats_total(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
         "num_tables_handwritten",
         "num_columns_total",
         "num_rows_total",
-        "num_pages_wrong_table_count",
-        "num_pages_more_tables_than_expected",
-        "num_pages_fewer_tables_than_expected",
+        "num_pages_zero_tables",  # New
+        "num_pages_wrong_non_zero_table_count",  # Renamed
+        "num_pages_more_tables_than_expected_non_zero",  # Renamed
+        "num_pages_fewer_tables_than_expected_non_zero",  # Renamed
         "num_printed_tables_wrong_cols",
         "num_printed_tables_more_cols_than_expected",
         "num_printed_tables_fewer_cols_than_expected",
@@ -563,23 +595,31 @@ def aggregate_stats_total(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
     total_stats = pd.DataFrame(total_stats_series).T  # Convert Series to DataFrame row
 
     # Recalculate percentages
-    total_stats["perc_pages_wrong_table_count"] = np.where(
+    total_stats["perc_pages_zero_tables"] = np.where(  # New
         total_stats["num_xml_files"] > 0,
-        (total_stats["num_pages_wrong_table_count"] / total_stats["num_xml_files"]),
+        (total_stats["num_pages_zero_tables"] / total_stats["num_xml_files"]),
         np.nan,
     )
-    total_stats["perc_pages_more_tables_than_expected"] = np.where(
+    total_stats["perc_pages_wrong_non_zero_table_count"] = np.where(  # Renamed
         total_stats["num_xml_files"] > 0,
         (
-            total_stats["num_pages_more_tables_than_expected"]
+            total_stats["num_pages_wrong_non_zero_table_count"]
             / total_stats["num_xml_files"]
         ),
         np.nan,
     )
-    total_stats["perc_pages_fewer_tables_than_expected"] = np.where(
+    total_stats["perc_pages_more_tables_than_expected_non_zero"] = np.where(  # Renamed
         total_stats["num_xml_files"] > 0,
         (
-            total_stats["num_pages_fewer_tables_than_expected"]
+            total_stats["num_pages_more_tables_than_expected_non_zero"]
+            / total_stats["num_xml_files"]
+        ),
+        np.nan,
+    )
+    total_stats["perc_pages_fewer_tables_than_expected_non_zero"] = np.where(  # Renamed
+        total_stats["num_xml_files"] > 0,
+        (
+            total_stats["num_pages_fewer_tables_than_expected_non_zero"]
             / total_stats["num_xml_files"]
         ),
         np.nan,
@@ -621,12 +661,14 @@ def aggregate_stats_total(per_book_stats_df: pd.DataFrame) -> pd.DataFrame:
         "num_tables_handwritten",
         "num_columns_total",
         "num_rows_total",
-        "num_pages_wrong_table_count",
-        "perc_pages_wrong_table_count",
-        "num_pages_more_tables_than_expected",
-        "perc_pages_more_tables_than_expected",
-        "num_pages_fewer_tables_than_expected",
-        "perc_pages_fewer_tables_than_expected",
+        "num_pages_zero_tables",  # New
+        "perc_pages_zero_tables",  # New
+        "num_pages_wrong_non_zero_table_count",  # Renamed
+        "perc_pages_wrong_non_zero_table_count",  # Renamed
+        "num_pages_more_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_more_tables_than_expected_non_zero",  # Renamed
+        "num_pages_fewer_tables_than_expected_non_zero",  # Renamed
+        "perc_pages_fewer_tables_than_expected_non_zero",  # Renamed
         "num_printed_tables_wrong_cols",
         "perc_printed_tables_wrong_cols",
         "num_printed_tables_more_cols_than_expected",
@@ -742,7 +784,13 @@ if __name__ == "__main__":
             )
             if not per_book_stats.empty:
                 percent_cols_book = [
-                    col for col in per_book_stats.columns if col.startswith("perc_")
+                    "perc_pages_zero_tables",
+                    "perc_pages_wrong_non_zero_table_count",
+                    "perc_pages_more_tables_than_expected_non_zero",
+                    "perc_pages_fewer_tables_than_expected_non_zero",
+                    "perc_printed_tables_wrong_cols",
+                    "perc_printed_tables_more_cols_than_expected",
+                    "perc_printed_tables_fewer_cols_than_expected",
                 ]
                 # Use .loc to avoid SettingWithCopyWarning
                 per_book_stats.loc[:, percent_cols_book] = per_book_stats[
@@ -766,9 +814,13 @@ if __name__ == "__main__":
                 per_parish_stats = aggregate_stats_per_parish(per_book_stats)
                 if not per_parish_stats.empty:
                     percent_cols_parish = [
-                        col
-                        for col in per_parish_stats.columns
-                        if col.startswith("perc_")
+                        "perc_pages_zero_tables",
+                        "perc_pages_wrong_non_zero_table_count",
+                        "perc_pages_more_tables_than_expected_non_zero",
+                        "perc_pages_fewer_tables_than_expected_non_zero",
+                        "perc_printed_tables_wrong_cols",
+                        "perc_printed_tables_more_cols_than_expected",
+                        "perc_printed_tables_fewer_cols_than_expected",
                     ]
                     per_parish_stats.loc[:, percent_cols_parish] = per_parish_stats[
                         percent_cols_parish
@@ -794,7 +846,13 @@ if __name__ == "__main__":
                 total_stats = aggregate_stats_total(per_book_stats)
                 if not total_stats.empty:
                     percent_cols_total = [
-                        col for col in total_stats.columns if col.startswith("perc_")
+                        "perc_pages_zero_tables",
+                        "perc_pages_wrong_non_zero_table_count",
+                        "perc_pages_more_tables_than_expected_non_zero",
+                        "perc_pages_fewer_tables_than_expected_non_zero",
+                        "perc_printed_tables_wrong_cols",
+                        "perc_printed_tables_more_cols_than_expected",
+                        "perc_printed_tables_fewer_cols_than_expected",
                     ]
                     total_stats.loc[:, percent_cols_total] = total_stats[
                         percent_cols_total

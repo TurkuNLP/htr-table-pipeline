@@ -9,6 +9,7 @@ def remove_overlapping_tables(
 
     Args:
         tables: List of Datatable objects
+        threshold: Percentage of overlap to consider for removal (default is 0.9)
 
     Returns:
         Filtered list of Datatable objects with overlapping tables removed

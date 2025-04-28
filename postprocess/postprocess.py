@@ -94,11 +94,17 @@ async def postprocess_printed_async_task(
             col_count = len(table.data.columns)
 
         if dspy.settings.get("lm") and col_count != col_count_expected:
-            table = await correct_table(
-                table,
-                annotation.col_headers,
-            )
-            col_count = len(table.data.columns)
+            try:
+                table = await correct_table(
+                    table,
+                    annotation.col_headers,
+                )
+                col_count = len(table.data.columns)
+            except Exception as e:
+                logger.error(
+                    f"Error during correct_table for {jpg_path.name} (table {i}): {e}",
+                    exc_info=True,
+                )
 
         if col_count != col_count_expected:
             # Last resort, corrector agent does this too but some may get through
@@ -175,9 +181,18 @@ async def postprocess_handrawn_async_task(
         # TODO trim empty columns from the left and right?
 
         if dspy.settings.get("lm"):
-            headers = await generate_header_annotations(table, table.data.columns.size)
-            if len(headers) == table.data.columns.size:
-                table.data.columns = headers
+            try:
+                headers = await generate_header_annotations(
+                    table, table.data.columns.size
+                )
+                if len(headers) == table.data.columns.size:
+                    table.data.columns = headers
+            except Exception as e:
+                logger.error(
+                    f"Error during generate_header_annotations for {jpg_path.name} (table {i}): {e}",
+                    exc_info=True,
+                )
+                pass
 
     return jpg_path, tables
 
