@@ -184,13 +184,12 @@ async def postprocess_handrawn_async_task(
                     table, table.data.columns.size
                 )
                 if len(headers) == table.data.columns.size:
-                    table.data.columns = headers
+                    tables[i].data.columns = headers
             except Exception as e:
                 logger.error(
                     f"Error during generate_header_annotations for {jpg_path.name} (table {i}): {e}",
                     exc_info=True,
                 )
-                pass
 
     return jpg_path, tables
 
@@ -393,6 +392,9 @@ def postprocess_book(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("dspy").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(

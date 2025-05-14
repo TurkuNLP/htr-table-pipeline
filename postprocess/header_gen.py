@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import random
@@ -9,7 +10,6 @@ from table_types import Datatable
 from tables_fix import remove_overlapping_tables
 from tqdm import tqdm
 from xml_utils import extract_datatables_from_xml
-
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ async def generate_header_annotations(
     """
 
     # Get header annotations
-    classify = dspy.Predict(AnnotateHeaders)
+    classify = dspy.ChainOfThought(AnnotateHeaders)
     classify = dspy.asyncify(classify)
     res = await classify(
         table=table.get_text_df().to_markdown(index=False),  # type: ignore
@@ -80,7 +80,8 @@ def generate_header_annotations_multi(
     list[Datatable],
 ]:
     """
-    Generate header annotations for tables using an LM.
+    Generate header annotations for tables using an LM. Assumes the tables all share the same
+    schema, tries to reason out what it is.
 
     Args:
         tables: List of Datatable objects
@@ -125,7 +126,61 @@ def generate_header_annotations_multi(
     return (res.ordered_headers, representative_tables)
 
 
+async def main():
+    dir = Path(
+        r"C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir\autods_ahlainen_fold_1\images\ahlainen\muuttaneet_1837-1887_mko1-3\pageTextClassified"
+    )
+    if not dir.exists():
+        logger.error(f"Directory {dir} does not exist")
+        return
+    paths = list(dir.glob("*.xml"))
+
+    tables: list[Datatable] = []
+    for path in tqdm(paths):
+        with open(
+            path,
+            encoding="utf-8",
+        ) as xml_file:
+            file_tables = extract_datatables_from_xml(xml_file)
+            file_tables = remove_overlapping_tables(file_tables)
+            tables.extend(file_tables)
+
+    tables = tables[:3]
+
+    logger.info(f"Found {len(tables)} tables")
+
+    for i, table in enumerate(tables):
+        headers = await generate_header_annotations(table, table.column_count)
+        if len(headers) != table.column_count:
+            logger.error(
+                f"Headers do not match the number of columns in the table: {headers} vs {table.column_count}"
+            )
+            continue
+        table.data.columns = headers
+
+    output_dir = Path("debug/header_gen_output")
+    logger.info(f"Output dir: {output_dir}")
+
+    if output_dir.exists():
+        for file in output_dir.glob("*"):
+            file.unlink()
+        logger.info("Emptying output dir")
+    else:
+        output_dir.mkdir(parents=True)
+
+    for i, table in enumerate(tables):
+        table.get_text_df().to_markdown(
+            output_dir / Path(f"dspy_test_{i}.md"), index=False
+        )
+
+    logger.info("Finished writing tables to output dir")
+
+
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+    )
+
     load_dotenv(Path(__file__).parent.parent / ".env")
 
     random.seed(42)
@@ -138,47 +193,5 @@ if __name__ == "__main__":
     )
     dspy.configure(lm=lm)
 
-    dir = Path(
-        "C:/Users/leope/Documents/dev/turku-nlp/test_zip_dir/output/autods_ahlainen_fold_1/images/ahlainen/muuttaneet_1837-1887_mko1-3/pageTextClassified"
-    )
-    paths = list(dir.glob("*.xml"))
-
-    tables: list[Datatable] = []
-    for path in tqdm(paths):
-        with open(
-            path,
-            encoding="utf-8",
-        ) as xml_file:
-            file_tables = extract_datatables_from_xml(xml_file)
-            file_tables = remove_overlapping_tables(file_tables)
-            tables.append(file_tables[0])
-
-    # Get header annotations from the updated function
-    headers, sample_tables = generate_header_annotations_multi(tables)
-
-    logger.info(f"Table headers: {headers}")
-    output_dir = Path("debug/header_gen_output")
-
-    if output_dir.exists():
-        for file in output_dir.glob("*"):
-            file.unlink()
-        logger.info("Emptying output dir")
-    else:
-        output_dir.mkdir(parents=True)
-
-    try:
-        for i, table in enumerate(sample_tables):
-            table.data.columns = headers
-            table.get_text_df().to_markdown(
-                output_dir / Path(f"dspy_test_{i}.md"), index=False
-            )
-    except ValueError as e:
-        logger.error(
-            f"Headers do not match the number of columns in the table: {e}",
-            exc_info=True,
-        )
-
-        for i, table in enumerate(tables):
-            table.get_text_df().to_markdown(
-                output_dir / Path(f"dspy_test_{i}.md"), index=False
-            )
+    # call main
+    asyncio.run(main())
