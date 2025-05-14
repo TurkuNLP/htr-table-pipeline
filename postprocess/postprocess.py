@@ -180,6 +180,8 @@ async def postprocess_handrawn_async_task(
 
         if dspy.settings.get("lm"):
             try:
+                # TODO pass a few of the previously generated headers to the LM as context
+                # These should be useful for inter-page unity since books *should* be relatively consistent
                 headers = await generate_header_annotations(
                     table, table.data.columns.size
                 )

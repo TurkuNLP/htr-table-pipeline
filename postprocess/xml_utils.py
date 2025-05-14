@@ -321,6 +321,7 @@ def create_handrawn_annotations(
         for datatable in handrawn_tables:
             # Create a dictionary to store the table data
             table_data = {
+                "source_name": datatable.source_path.name,
                 "table_id": datatable.id,
                 "headers": datatable.data.columns.tolist(),
             }
