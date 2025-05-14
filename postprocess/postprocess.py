@@ -72,58 +72,56 @@ async def postprocess_printed_async_task(
         annotation: TableAnnotation
         # check if i in annotation
         if i >= len(print_type.table_annotations):
-            # print(f"Table {i} not found in annotations")
             annotation = print_type.table_annotations[-1]
         else:
             annotation = print_type.table_annotations[i]
 
-        col_count = len(table.data.columns)
         col_count_expected = annotation.number_of_columns
 
-        # TODO a better way to mark tables as problematic (to be passed to the corrector agent)
-        # Biggest one is checking that the column with longest strings is aligned with name column
+        is_problematic = False
 
-        # TODO add asyncio.to_thread and wrap dspy program in asyncify to make it awaitable
-
-        if col_count != col_count_expected:
+        if table.column_count != col_count_expected:
+            # Trim edges of the table to remove empty columns with the name (longest string) column as anchor
             table = await asyncio.to_thread(
                 remove_empty_columns_using_name_as_anchor,
                 table,
                 annotation,
             )
-            col_count = len(table.data.columns)
 
-        if dspy.settings.get("lm") and col_count != col_count_expected:
+        if table.column_count != col_count_expected:
+            is_problematic = True
+
+        # TODO check if col with longest strings is in name col slot
+
+        if dspy.settings.get("lm") and is_problematic:
             try:
                 table = await correct_table(
                     table,
                     annotation.col_headers,
                 )
-                col_count = len(table.data.columns)
             except Exception as e:
                 logger.error(
                     f"Error during correct_table for {jpg_path.name} (table {i}): {e}",
                     exc_info=True,
                 )
 
-        if col_count != col_count_expected:
+        if table.column_count != col_count_expected:
             # Last resort, corrector agent does this too but some may get through
             table = await asyncio.to_thread(
                 add_columns_using_name_as_anchor,
                 table,
                 annotation,
             )
-            col_count = len(table.data.columns)
 
-        if col_count != col_count_expected:
+        if table.column_count != col_count_expected:
             # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
             # TODO Currently keeps an empty row so that it's not recognized as a header by other code, should this be so?
+            #
             table = await asyncio.to_thread(
                 match_col_count_for_empty_tables,
                 table,
                 annotation,
             )
-            col_count = len(table.data.columns)
 
         tables[i] = table
 
@@ -263,7 +261,7 @@ def postprocess(
                 api_base=llm_url,
             )
 
-            dspy.configure(lm=lm)
+            dspy.configure(lm=lm, async_max_workers=256)
 
         # Gather all the book dirs
         book_dirs: list[Path] = []

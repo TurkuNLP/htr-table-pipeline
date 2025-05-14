@@ -125,6 +125,13 @@ class Datatable:
             logger.error("Failed to map data CellData to text.")
             raise e
 
+    @property
+    def column_count(self) -> int:
+        """
+        Returns the number of columns in the table.
+        """
+        return len(self.data.columns)
+
 
 @dataclass
 class ParishBook:
