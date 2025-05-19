@@ -1,4 +1,4 @@
-from table_types import Datatable
+from postprocess.table_types import Datatable
 
 
 def remove_overlapping_tables(

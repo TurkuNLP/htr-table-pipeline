@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from xml_utils import extract_datatables_from_xml
+from postprocess.xml_utils import extract_datatables_from_xml
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

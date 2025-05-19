@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -111,7 +111,7 @@ class Datatable:
     """
 
     rect: Rect
-    source_path: Path
+    source_path: Path  # xml file path
     id: str  # ID of the table in the XML
     data: pd.DataFrame  # DF of CellData
 

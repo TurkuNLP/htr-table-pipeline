@@ -2,8 +2,8 @@ import argparse
 from pathlib import Path
 from typing import cast
 
-from table_types import CellData, Datatable, Rect
-from xml_utils import extract_datatables_from_xml
+from postprocess.table_types import CellData, Datatable, Rect
+from postprocess.xml_utils import extract_datatables_from_xml
 
 
 def validate_cell_positions(

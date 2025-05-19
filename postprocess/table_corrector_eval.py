@@ -5,10 +5,11 @@ import dspy
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from table_corrector_agent import correct_table
-from table_types import CellData, Datatable, Rect
 from tqdm import tqdm
-from xml_utils import extract_datatables_from_xml
+
+from postprocess.table_corrector_agent import correct_table
+from postprocess.table_types import CellData, Datatable, Rect
+from postprocess.xml_utils import extract_datatables_from_xml
 
 
 def calculate_dataframe_similarity(

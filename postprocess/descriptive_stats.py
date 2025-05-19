@@ -5,19 +5,18 @@ import statistics
 import sys
 from pathlib import Path
 from typing import Literal
-from tqdm.contrib.concurrent import process_map
 
 import numpy as np
 import pandas as pd
+from tqdm.contrib.concurrent import process_map
 
-sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
-
-from metadata import get_parish_books_from_annotations, read_layout_annotations
-from table_types import ParishBook, PrintType
-from xml_utils import extract_datatables_from_xml
-
+from postprocess.metadata import (
+    get_parish_books_from_annotations,
+    read_layout_annotations,
+)
+from postprocess.table_types import ParishBook, PrintType
+from postprocess.xml_utils import extract_datatables_from_xml
 from utilities.temp_unzip import TempExtractedData
-
 
 logger = logging.getLogger(__name__)
 

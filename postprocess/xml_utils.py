@@ -4,8 +4,8 @@ from io import TextIOWrapper
 from pathlib import Path
 
 import pandas as pd
-from table_types import CellData, Datatable, Rect
 
+from postprocess.table_types import CellData, Datatable, Rect
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,8 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
                     cell_type = "empty"
                 case "structure {type:multi-line;}":
                     cell_type = "multi-line"
+                case "structure {type:misc;}":
+                    cell_type = "misc"
                 case None:  # on cells created by postprocessing...
                     cell_type = "empty"
                 case _:

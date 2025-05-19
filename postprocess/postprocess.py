@@ -2,30 +2,30 @@ import argparse
 import asyncio
 import logging
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Optional, cast
-from dotenv import load_dotenv
+
 import dspy
+from dotenv import load_dotenv
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
-from header_gen import generate_header_annotations
-from table_corrector_agent import correct_table
-from tables_fix import remove_overlapping_tables
-
-sys.path.append(str(Path("../")))  # Needed to import modules from the parent directory
-
-from cols_fix import (
+from postprocess.cols_fix import (
     add_columns_using_name_as_anchor,
     match_col_count_for_empty_tables,
     remove_empty_columns_using_name_as_anchor,
 )
-from table_types import Datatable, ParishBook, PrintType, TableAnnotation
+from postprocess.header_gen import generate_header_annotations
+from postprocess.metadata import (
+    get_parish_books_from_annotations,
+    read_layout_annotations,
+)
+from postprocess.table_corrector_agent import correct_table
+from postprocess.table_types import Datatable, ParishBook, PrintType, TableAnnotation
+from postprocess.tables_fix import remove_overlapping_tables
+from postprocess.xml_utils import book_create_updated_xml, extract_datatables_from_xml
 from utilities.temp_unzip import TempExtractedData
-from xml_utils import book_create_updated_xml, extract_datatables_from_xml
-from metadata import read_layout_annotations, get_parish_books_from_annotations
-
 
 logger = logging.getLogger(__name__)
 

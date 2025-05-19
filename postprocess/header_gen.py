@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 from table_types import Datatable
 from tables_fix import remove_overlapping_tables
 from tqdm import tqdm
-from xml_utils import extract_datatables_from_xml
+
+from postprocess.xml_utils import extract_datatables_from_xml
 
 logger = logging.getLogger(__name__)
 

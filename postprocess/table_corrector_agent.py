@@ -8,11 +8,11 @@ from pathlib import Path
 
 import dspy
 from dotenv import load_dotenv
-from metadata import get_print_type_for_jpg
-from table_types import CellData, Datatable
-from tables_fix import remove_overlapping_tables
-from xml_utils import extract_datatables_from_xml
 
+from postprocess.metadata import get_print_type_for_jpg
+from postprocess.table_types import CellData, Datatable
+from postprocess.tables_fix import remove_overlapping_tables
+from postprocess.xml_utils import extract_datatables_from_xml
 
 logger = logging.getLogger(__name__)
 
