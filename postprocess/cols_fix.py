@@ -2,7 +2,7 @@ import unittest
 import pandas as pd
 
 
-from table_types import CellData, Datatable, TableAnnotation
+from postprocess.table_types import CellData, Datatable, TableAnnotation
 
 
 def match_col_count_for_empty_tables(
@@ -273,7 +273,6 @@ class TestEmptyTableColMatch(unittest.TestCase):
 
 
 class TestRemoveEmptyColumns(unittest.TestCase):
-
     def test_rem_from_left(self):
         # Test case 1: Basic case with empty columns on both sides
         df = pd.DataFrame(
