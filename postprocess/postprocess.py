@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Optional, cast
 
@@ -28,6 +27,11 @@ from postprocess.xml_utils import book_create_updated_xml, extract_datatables_fr
 from utilities.temp_unzip import TempExtractedData
 
 logger = logging.getLogger(__name__)
+
+
+# TODO !!!!!!!!! currently some of the postprocessing code separates file names by underscore
+# which breaks in multi-word parish names. This happens in multiple places, need to through the
+# code to fix this to use a proper regex solution
 
 
 def rfind_first(path: Path, find: str) -> Optional[Path]:
