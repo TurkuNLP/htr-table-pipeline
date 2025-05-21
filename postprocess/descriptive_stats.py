@@ -1,6 +1,5 @@
 import argparse
 import logging
-import multiprocessing
 import statistics
 import sys
 from pathlib import Path

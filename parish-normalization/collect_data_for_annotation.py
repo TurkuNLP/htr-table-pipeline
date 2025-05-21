@@ -15,7 +15,6 @@ import torch
 import cv2
 from postprocess.table_types import CellData, Datatable
 from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
 from transformers import TrOCRProcessor, VisionEncoderDecoderModel  # type: ignore
 from postprocess.xml_utils import extract_datatables_from_xml
 

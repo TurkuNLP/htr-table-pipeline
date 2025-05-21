@@ -1,8 +1,10 @@
 import argparse
 import asyncio
+import concurrent.futures
 import logging
 import re
 from pathlib import Path
+from typing import Literal
 
 from utilities.temp_unzip import TempExtractedData
 
@@ -10,11 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 async def main(args: argparse.Namespace) -> None:
-    data_working_dir = Path(args.working_dir) / "data"
-    data_working_dir.mkdir(parents=True, exist_ok=True)
+    if args.working_dir:
+        data_working_dir = Path(args.working_dir) / "data"
+        data_working_dir.mkdir(parents=True, exist_ok=True)
     with TempExtractedData(
         Path(args.data_dir),
-        override_temp_dir=data_working_dir,
+        override_temp_dir=data_working_dir if args.working_dir else None,
     ) as temp_dir:
         # Get all the xml files in the annotated data dir
         annotated_xml_files = list(Path(args.annotated_data_dir).rglob("*.xml"))
@@ -22,7 +25,6 @@ async def main(args: argparse.Namespace) -> None:
         logger.info(
             f"Found {len(annotated_xml_files)} annotated XML files in {args.annotated_data_dir}"
         )
-
         # Now we need to find the corresponding xml files in the temp_dir
         xml_annotated_to_actual: dict[Path, Path] = {}
         for annotated_xml_file in annotated_xml_files:
@@ -76,19 +78,38 @@ async def main(args: argparse.Namespace) -> None:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        annotated_output_dir = output_dir / "annotated"
-        annotated_output_dir.mkdir(parents=True, exist_ok=True)
-        actual_output_dir = output_dir / "actual"
-        actual_output_dir.mkdir(parents=True, exist_ok=True)
+        annotated_output_dir_printed = output_dir / "printed" / "annotated"
+        annotated_output_dir_printed.mkdir(parents=True, exist_ok=True)
+        annotated_output_dir_handdrawn = output_dir / "handdrawn" / "annotated"
+        annotated_output_dir_handdrawn.mkdir(parents=True, exist_ok=True)
+        actual_output_dir_printed = output_dir / "printed" / "actual"
+        actual_output_dir_printed.mkdir(parents=True, exist_ok=True)
+        actual_output_dir_handdrawn = output_dir / "handdrawn" / "actual"
+        actual_output_dir_handdrawn.mkdir(parents=True, exist_ok=True)
 
-        for annotated_xml_file, actual_xml_file in xml_annotated_to_actual.items():
-            # Get the actual xml dir path to ensure the new dataset follows the same structure
-            # E.g. Path('autods_ahlainen_fold_1/images/ahlainen/muuttaneet_1837-1887_mko1-3/pageTextClassified/autods_ahlainen_muuttaneet_1837-1887_mko1-3_15.xml')
+        def copy_xml_files(annotated_actual_pair: tuple[Path, Path]) -> None:
+            annotated_xml_file, actual_xml_file = annotated_actual_pair
             actual_xml_file_path_parts = actual_xml_file.parts[-6:]
             structured_xml_path = Path(*actual_xml_file_path_parts)
 
+            type_val = annotated_xml_file.parts[-4]
+            if type_val not in ["printed", "handdrawn"]:
+                logger.error(
+                    f"Type value {type_val} not in printed or handdrawn. Skipping file {annotated_xml_file.name}"
+                )
+                return
+            printed_handdrawn: Literal["printed", "handdrawn"] = type_val  # type: ignore
+
             # Copy the annotated xml file to the output dir
-            annotated_output_file = annotated_output_dir / structured_xml_path
+            if printed_handdrawn == "printed":
+                annotated_output_file = (
+                    annotated_output_dir_printed / structured_xml_path
+                )
+            elif printed_handdrawn == "handdrawn":
+                annotated_output_file = (
+                    annotated_output_dir_handdrawn / structured_xml_path
+                )
+            annotated_output_file.parent.mkdir(parents=True, exist_ok=True)
             if not annotated_output_file.exists():
                 annotated_output_file.write_text(
                     annotated_xml_file.read_text(encoding="utf-8"),
@@ -96,15 +117,23 @@ async def main(args: argparse.Namespace) -> None:
                 )
 
             # Copy the actual xml file to the output dir
-            actual_output_file = actual_output_dir / structured_xml_path
+            if printed_handdrawn == "printed":
+                actual_output_file = actual_output_dir_printed / structured_xml_path
+            elif printed_handdrawn == "handdrawn":
+                actual_output_file = actual_output_dir_handdrawn / structured_xml_path
+            actual_output_file.parent.mkdir(parents=True, exist_ok=True)
             if not actual_output_file.exists():
                 actual_output_file.write_text(
                     actual_xml_file.read_text(encoding="utf-8"),
                     encoding="utf-8",
                 )
 
+        # Parallelize the copying of files
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            list(executor.map(copy_xml_files, xml_annotated_to_actual.items()))
+
         logger.info(
-            f"Annotated XML files copied to {annotated_output_dir} and actual XML files copied to {actual_output_dir}"
+            f"Annotated XML files copied to {annotated_output_dir_printed} and actual XML files copied to {actual_output_dir_printed}"
         )
 
 
@@ -201,21 +230,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--annotated-data-dir",
         type=str,
+        required=True,
         help="Directory where the annotated XML files are stored (recursive), e.g. path/test-set.",
     )
     parser.add_argument(
         "--data-dir",
         type=str,
+        required=True,
         help="Directory where the actual XML files are stores (e.g. path/autods-zips)",
     )
     parser.add_argument(
         "--data-xml-dir",
         type=str,
+        required=True,
         help="The directory from which to read the XML files (e.g. pageTextClassified).",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
+        required=True,
         help="Directory where the output will be stored.",
     )
     parser.add_argument(
@@ -231,3 +264,5 @@ if __name__ == "__main__":
     logger.info("Starting data collection for annotation...")
 
     asyncio.run(main(args))
+
+    # Usage: python -m postprocess.evaluation.collect_eval_data OPTIONS
