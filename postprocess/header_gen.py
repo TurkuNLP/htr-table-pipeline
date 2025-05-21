@@ -6,10 +6,10 @@ from pathlib import Path
 
 import dspy
 from dotenv import load_dotenv
-from table_types import Datatable
-from tables_fix import remove_overlapping_tables
 from tqdm import tqdm
 
+from postprocess.table_types import Datatable
+from postprocess.tables_fix import remove_overlapping_tables
 from postprocess.xml_utils import extract_datatables_from_xml
 
 logger = logging.getLogger(__name__)

@@ -459,7 +459,4 @@ if __name__ == "__main__":
         Path(args.output_dir) if args.output_dir else None,
     )
 
-    # Usage: python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes helsinki
-
-    # python postprocess.py --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --model "" --parishes elimaki,alajarvi,ahlainen
-    # --model  --llm-url localhost:8000
+    # Usage: python -m  postprocess.postprocess --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes alajarvi,ahlainen,alaharma --model "" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\postprocess_output"
