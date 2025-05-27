@@ -28,7 +28,9 @@ from utilities.temp_unzip import TempExtractedData
 
 logger = logging.getLogger(__name__)
 
-DEBUG_LEVEL = logging.DEBUG
+# TODO set log levels from cmd args
+LOG_LEVEL = logging.DEBUG
+SUBPROCESS_LOG_LEVEL = logging.WARNING
 
 # TODO !!!!!!!!! currently some of the postprocessing code separates file names by underscore
 # which breaks in multi-word parish names. This happens in multiple places, need to through the
@@ -159,7 +161,7 @@ def postprocess_printed(
     """
 
     logging.basicConfig(
-        level=DEBUG_LEVEL,
+        level=SUBPROCESS_LOG_LEVEL,
         format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
     )
     logger.debug(
@@ -230,7 +232,7 @@ def postprocess_handrawn(
     """
 
     logging.basicConfig(
-        level=DEBUG_LEVEL,
+        level=SUBPROCESS_LOG_LEVEL,
         format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
     )
     logger.debug(
@@ -310,15 +312,14 @@ def postprocess(
 
             book_dirs.extend(list(dir_with_book_dirs.iterdir()))
 
-        # Process the books in parallel
+        logger.info(
+            f"Processing {len(book_dirs)} books in parallel with model: {model}"
+        )
+
         process_map_args = [
             (printed_types, parish_books_mapping, book_dir, model, llm_url)
             for book_dir in book_dirs
         ]
-
-        logger.info(
-            f"Processing {len(process_map_args)} books in parallel with model: {model}"
-        )
 
         for book_dir, book_data in tqdm(
             process_map(
@@ -354,7 +355,7 @@ def postprocess_book_parallel_wrapper(
     ],
 ) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
     logging.basicConfig(
-        level=DEBUG_LEVEL,
+        level=SUBPROCESS_LOG_LEVEL,
         format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
     )
     logging.getLogger("dspy").setLevel(logging.WARNING)
@@ -397,40 +398,39 @@ def postprocess_book(
         )
         dspy.configure(lm=lm, async_max_workers=256)
 
-    jpg_paths = list(book_dir.rglob("*.jpg"))
+    # Grab the final XML file from pageTextClassified/
+    # TODO add a cmd arg to use another directory than pageTextClassified?
+    xml_paths = list((book_dir / "pageTextClassified").glob("*.xml"))
 
     book: ParishBook = parish_books_mapping[f"{book_dir.parent.name}_{book_dir.name}"]
 
-    # format: dict[print_type, dict[jpg_path, list[Datatable]]]
+    # format: dict[print_type, dict[xml_path, list[Datatable]]]
     # print_type has to be included since the same book can include multiple formats
     book_data: dict[str, dict[Path, list[Datatable]]] = {}
 
     # Iterate over all the jpg files in the book dir
-    for jpg_path in jpg_paths:
-        # Grab the final XML file from pageTextClassified/
-        xml_path = (
-            jpg_path.parent
-            / Path("pageTextClassified")
-            / Path(jpg_path.name).with_suffix(".xml")
-        )
-
+    for xml_path in xml_paths:
         if not xml_path.exists():
-            raise FileNotFoundError(
-                f"XML file not found for {jpg_path.name} in: \n\t{xml_path}"
-            )
+            raise FileNotFoundError(f"XML file not found \n\t{xml_path}")
 
-        opening_id = int(jpg_path.stem.split("_")[-1])
+        opening_id = int(xml_path.stem.split("_")[-1])
 
         tables: list[Datatable]
         with open(xml_path, "rt", encoding="utf-8") as xml_file:
             tables = extract_datatables_from_xml(xml_file)
 
-        if book.get_type_for_opening(opening_id) not in book_data.keys():
-            book_data[book.get_type_for_opening(opening_id)] = {}
-        book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
+        opening_print_type = book.get_type_for_opening(opening_id)
+
+        if opening_print_type not in book_data.keys():
+            book_data[opening_print_type] = {}
+        book_data[opening_print_type][xml_path] = tables
 
     logger.debug(
-        f"Found {len(book_data)} print types for book {book_dir.name} with {len(jpg_paths)} jpg files."
+        f"Processing book {book_dir.name} with {len(book_data)} print types in book_data."
+    )
+
+    logger.debug(
+        f"Found {len(book_data)} print types for book {book_dir.name} with {len(xml_paths)} jpg files."
     )
 
     # Postprocess the tables based on print type
@@ -452,7 +452,7 @@ def postprocess_book(
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=DEBUG_LEVEL,
+        level=LOG_LEVEL,
         format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
     )
     logging.getLogger("dspy").setLevel(logging.WARNING)

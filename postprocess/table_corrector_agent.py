@@ -25,7 +25,7 @@ class HeaderTranslation(dspy.Signature):
 
 
 async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
-    logger.debug("Running correct_table() agent")
+    logger.info("Running correct_table() agent")
     # Translate the headers
     translate = dspy.Predict(HeaderTranslation)
     translated_headers: list[str] = translate(headers=headers).translated_headers  # type: ignore

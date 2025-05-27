@@ -351,7 +351,8 @@ def book_create_updated_xml(
     output_dir = book_path / "pagePostprocessed"
 
     if output_dir.exists():
-        # empty the dir... used for testing but in prod shouldn't ever happen
+        # empty the dir
+        logger.info(f"Emptying output dir: {output_dir}")
         for file in output_dir.iterdir():
             file.unlink()
     else:
