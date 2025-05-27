@@ -28,6 +28,7 @@ from utilities.temp_unzip import TempExtractedData
 
 logger = logging.getLogger(__name__)
 
+DEBUG_LEVEL = logging.DEBUG
 
 # TODO !!!!!!!!! currently some of the postprocessing code separates file names by underscore
 # which breaks in multi-word parish names. This happens in multiple places, need to through the
@@ -65,12 +66,15 @@ async def postprocess_printed_async_task(
         book.get_type_for_opening(opening_id)
     ].table_count
 
+    logger.debug(
+        f"Postprocessing {jpg_path.name} (opening {opening_id}) with {table_count} tables, expected {table_count_expected} tables."
+    )
+
     # Remove extra tables
     if table_count > table_count_expected:
         tables = remove_overlapping_tables(tables)
         table_count = len(tables)  # Update table count after filtering
 
-    # Only a few iterations
     for i, table in enumerate(tables):
         print_type = print_types[book.get_type_for_opening(opening_id)]
         annotation: TableAnnotation
@@ -103,11 +107,18 @@ async def postprocess_printed_async_task(
                     table,
                     annotation.col_headers,
                 )
+                logger.debug(
+                    f"Corrected table for {jpg_path.name} (table {i}) using LLM."
+                )
             except Exception as e:
                 logger.error(
                     f"Error during correct_table for {jpg_path.name} (table {i}): {e}",
                     exc_info=True,
                 )
+        else:
+            logger.debug(
+                f"Skipping LLM correction for {jpg_path.name} (table {i}) since LLM is not enabled or table is not problematic.\n\tis_problematic: {is_problematic}"
+            )
 
         if table.column_count != col_count_expected:
             # Last resort, corrector agent does this too but some may get through
@@ -146,6 +157,14 @@ def postprocess_printed(
     which can call the more cpu intensive functions in a thread pool (asyncio.to_thread) which all run
     on the same cpu core... All this so that LM calls can (hopefully) be batched better by vllm.
     """
+
+    logging.basicConfig(
+        level=DEBUG_LEVEL,
+        format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logger.debug(
+        f"Postprocessing printed book {book.parish_name} with {len(data)} jpg files."
+    )
 
     async def main():
         tasks = [
@@ -210,6 +229,14 @@ def postprocess_handrawn(
     The aim is to figure out what data is stored in whatever columns
     """
 
+    logging.basicConfig(
+        level=DEBUG_LEVEL,
+        format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logger.debug(
+        f"Postprocessing handrawn book {book.parish_name} with {len(data)} jpg files."
+    )
+
     async def main():
         tasks = [
             postprocess_handrawn_async_task(jpg_path, tables, book)
@@ -251,8 +278,6 @@ def postprocess(
         for book in parish_books:
             parish_books_mapping[book.folder_id()] = book
 
-        # Find first dir with multiple files within
-
         # Initialize LM
 
         env_file = Path(__file__).parent.parent / ".env"
@@ -260,6 +285,7 @@ def postprocess(
             load_dotenv(env_file)
 
         if model != "":
+            logger.info(f"Using model: {model}")
             lm = dspy.LM(
                 model,
                 api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
@@ -267,6 +293,10 @@ def postprocess(
             )
 
             dspy.configure(lm=lm, async_max_workers=256)
+        else:
+            logger.info(
+                "No model specified, skipping LLM-related postprocessing steps."
+            )
 
         # Gather all the book dirs
         book_dirs: list[Path] = []
@@ -285,6 +315,10 @@ def postprocess(
             (printed_types, parish_books_mapping, book_dir, model, llm_url)
             for book_dir in book_dirs
         ]
+
+        logger.info(
+            f"Processing {len(process_map_args)} books in parallel with model: {model}"
+        )
 
         for book_dir, book_data in tqdm(
             process_map(
@@ -319,6 +353,13 @@ def postprocess_book_parallel_wrapper(
         str,  # llm_url
     ],
 ) -> tuple[Path, dict[str, dict[Path, list[Datatable]]]]:
+    logging.basicConfig(
+        level=DEBUG_LEVEL,
+        format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logging.getLogger("dspy").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     return postprocess_book(args[0], args[1], args[2], args[3], args[4])
 
 
@@ -346,12 +387,15 @@ def postprocess_book(
     if env_file.exists():
         load_dotenv(env_file)
     if model != "":
+        logger.debug(
+            f"Initializing LLM from subprocess  with model: {model} and URL: {llm_url}"
+        )
         lm = dspy.LM(
             model,
             api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
             api_base=llm_url,
         )
-        dspy.configure(lm=lm)
+        dspy.configure(lm=lm, async_max_workers=256)
 
     jpg_paths = list(book_dir.rglob("*.jpg"))
 
@@ -385,19 +429,32 @@ def postprocess_book(
             book_data[book.get_type_for_opening(opening_id)] = {}
         book_data[book.get_type_for_opening(opening_id)][jpg_path] = tables
 
+    logger.debug(
+        f"Found {len(book_data)} print types for book {book_dir.name} with {len(jpg_paths)} jpg files."
+    )
+
     # Postprocess the tables based on print type
     for print_type, type_data in book_data.items():
         if "print" not in print_type.lower():
+            logger.info(
+                f"Postprocessing handrawn book {book_dir.name} with print type: {print_type}"
+            )
             type_data = postprocess_handrawn(type_data, book)
             book_data[print_type] = type_data
         else:
+            logger.info(
+                f"Postprocessing printed book {book_dir.name} with print type: {print_type}"
+            )
             type_data = postprocess_printed(type_data, book, printed_types)
             book_data[print_type] = type_data
     return book_dir, book_data
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=DEBUG_LEVEL,
+        format="%(processName)s - %(name)s - %(levelname)s - %(message)s",
+    )
     logging.getLogger("dspy").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
@@ -437,7 +494,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="openai/gemini-2.0-flash",
+        default="",
         help="The model to use for the LLM. If empty, all llm-requiring steps will be skipped.",
     )
     parser.add_argument(
