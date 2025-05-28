@@ -41,11 +41,6 @@ if __name__ == "__main__":
         required=True,
         help="Path to the annotations file (Excel format).",
     )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        required=True,
-    )
 
     args = parser.parse_args()
 
@@ -139,4 +134,4 @@ if __name__ == "__main__":
         for diff, count in diff_count.items():
             logger.info(f"Difference: {diff}, Count: {count}")
 
-        # Usage: python -m postprocess.evaluation.table_agent_eval --input-dir /scratch/project_2005072/leo/postprocess/eval-data/printed --working-dir $LOCAL_SCRATCH --annotations /scratch/project_2005072/leo/postprocess/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx
+        # Usage: python -m postprocess.evaluation.table_agent_eval --xml-dir pagePostprocessed --input-dir /scratch/project_2005072/leo/postprocess/eval-data/printed --working-dir $LOCAL_SCRATCH --annotations /scratch/project_2005072/leo/postprocess/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx
