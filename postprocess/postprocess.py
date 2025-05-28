@@ -436,13 +436,13 @@ def postprocess_book(
     # Postprocess the tables based on print type
     for print_type, type_data in book_data.items():
         if "print" not in print_type.lower():
-            logger.info(
+            logger.debug(
                 f"Postprocessing handrawn book {book_dir.name} with print type: {print_type}"
             )
             type_data = postprocess_handrawn(type_data, book)
             book_data[print_type] = type_data
         else:
-            logger.info(
+            logger.debug(
                 f"Postprocessing printed book {book_dir.name} with print type: {print_type}"
             )
             type_data = postprocess_printed(type_data, book, printed_types)

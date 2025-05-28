@@ -50,7 +50,6 @@ if __name__ == "__main__":
 
     working_dir = Path(args.working_dir) if args.working_dir else None
     annotations_file = Path(args.annotations)
-    output_dir = Path(args.output_dir)
 
     if not input_dir.exists():
         logger.error(f"Input directory {input_dir} does not exist.")
@@ -58,9 +57,6 @@ if __name__ == "__main__":
     if not annotations_file.exists():
         logger.error(f"Annotations file {annotations_file} does not exist.")
         exit(1)
-    if not output_dir.exists():
-        logger.info(f"Creating output directory {output_dir}.")
-        output_dir.mkdir(parents=True, exist_ok=True)
 
     with TempExtractedData(
         input_actual_dir, override_temp_dir=working_dir
