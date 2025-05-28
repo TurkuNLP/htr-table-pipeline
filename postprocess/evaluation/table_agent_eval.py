@@ -30,6 +30,12 @@ if __name__ == "__main__":
         help="The working directory for temporary files. Defaults to None.",
     )
     parser.add_argument(
+        "--xml-dir",
+        type=str,
+        default="pageTextClassified",
+        help="The directory containing the XML files to be processed. Defaults to 'pageTextClassified'.",
+    )
+    parser.add_argument(
         "--annotations",
         type=str,
         required=True,
@@ -79,7 +85,7 @@ if __name__ == "__main__":
 
             act_xml_file_parts = ann_xml_file_parts.copy()
             act_xml_file_parts[-7] = "actual-zipped-postprocessed"
-            act_xml_file_parts[-2] = "pageTextClassified"
+            act_xml_file_parts[-2] = args.xml_dir
             act_xml_file_parts = act_xml_file_parts[-6:]
 
             act_xml_file = actual_dir / Path(*act_xml_file_parts)
@@ -132,3 +138,5 @@ if __name__ == "__main__":
         logger.info("Differences in number of columns:")
         for diff, count in diff_count.items():
             logger.info(f"Difference: {diff}, Count: {count}")
+
+        # Usage: python -m postprocess.evaluation.table_agent_eval --input-dir /scratch/project_2005072/leo/postprocess/eval-data/printed --working-dir $LOCAL_SCRATCH --annotations /scratch/project_2005072/leo/postprocess/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx
