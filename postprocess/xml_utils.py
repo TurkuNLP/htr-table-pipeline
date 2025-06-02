@@ -232,22 +232,19 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
 
 
 def create_updated_xml_file(
-    source_xml_file: Path, output_xml_file: Path, datatables: list["Datatable"]
+    source_xml_file: Path, output_xml_file: Path, datatables: list[Datatable]
 ) -> None:
     """
-    Creates an updated XML file by modifying table cell data based on the provided Datatable objects.
-
-    Args:
-        source_xml_file: Path to the source PAGE XML file.
-        output_xml_file: Path where the updated XML file will be saved.
-        datatables: A list of Datatable objects containing the new data.
+    Creates an updated XML file with the given datatables, retaining metadata
+    and structure from the source XML file, and fully populating cell data.
     """
-    # Ensure the namespace prefix is registered for clean output (e.g., <TableCell> instead of <ns0:TableCell>)
-    # The empty string for prefix means it's the default namespace.
-    ET.register_namespace("", namespace["ns"])
-
     try:
-        tree = ET.parse(source_xml_file)
+        # Define the PAGE XML namespace
+        # (ensure this matches the namespace in your XML files)
+        ns = {"page": "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"}
+        ET.register_namespace("", ns["page"])  # For cleaner output
+
+        tree = ET.parse(source_xml_file, parser=ET.XMLParser(encoding="utf-8"))
         root = tree.getroot()
     except ET.ParseError as e:
         logger.error(f"Failed to parse XML file {source_xml_file}: {e}")
@@ -256,215 +253,212 @@ def create_updated_xml_file(
         logger.error(f"Source XML file not found: {source_xml_file}")
         raise
 
-    for datatable_obj in datatables:
-        table_id = datatable_obj.id
+    datatable_dict: dict[str, Datatable] = {
+        datatable.id: datatable for datatable in datatables
+    }
 
-        # Find the TableRegion element using its ID.
-        # The XPath query .//ns:TableRegion searches for the element anywhere under the root.
-        table_region_el = root.find(f".//ns:TableRegion[@id='{table_id}']", namespace)
+    page_element = root.find("page:Page", ns)
+    if page_element is None:
+        logger.error("No <Page> element found in the XML file.")
+        raise ValueError("XML structure error: <Page> element missing.")
 
-        if table_region_el is None:
-            logger.warning(
-                f"TableRegion with id '{table_id}' not found in {source_xml_file}. Skipping this table."
+    tables_to_remove_from_xml: list[ET.Element] = []
+
+    # Iterate over TableRegion elements within the Page
+    for table_xml_el in page_element.findall("./page:TableRegion", ns):
+        table_id = table_xml_el.attrib.get("id")
+        if not table_id:
+            logger.warning("Found a TableRegion without an ID. Skipping.")
+            continue
+
+        # Skip tables with fewer than 2 cells (e.g., headers or empty)
+        if (
+            len(table_xml_el.findall("./page:TableCell", ns)) < 2
+            and table_id not in datatable_dict
+        ):
+            continue
+
+        if table_id not in datatable_dict:
+            tables_to_remove_from_xml.append(table_xml_el)
+            logger.info(
+                f"Table '{table_id}' not in provided datatables. Marking for removal."
             )
             continue
 
-        # Remove all existing TableCell child elements from this TableRegion.
-        # The tag format for namespaced elements is "{namespace_uri}ElementName".
-        expected_tablecell_tag = f"{{{namespace['ns']}}}TableCell"
-        existing_cells = [
-            child for child in table_region_el if child.tag == expected_tablecell_tag
-        ]
-        for cell_el in existing_cells:
-            table_region_el.remove(cell_el)
+        datatable = datatable_dict[table_id]
+        logger.info(f"Processing table '{table_id}'.")
 
-        # Add new TableCell elements based on the data in datatable_obj.data
-        df_data = datatable_obj.data
-        # Extract a suffix from table_id for generating unique TextLine IDs (e.g., "0" from "Table_0")
-        table_id_suffix = table_id.split("_")[-1] if "_" in table_id else table_id
+        # 1. Update TableRegion Coords
+        table_coords_xml = table_xml_el.find("./page:Coords", ns)
+        if table_coords_xml is None:
+            table_coords_xml = ET.SubElement(
+                table_xml_el,
+                ET.QName(ns["page"], "Coords"),  # type: ignore
+            )
+        table_coords_xml.set("points", datatable.rect.get_coords_str())
 
-        for r_idx in range(df_data.shape[0]):  # Iterate over rows
-            for c_idx in range(df_data.shape[1]):  # Iterate over columns
-                cell_value = df_data.iloc[r_idx, c_idx]
+        # Update other TableRegion attributes if necessary (e.g., custom)
+        # table_xml_el.set("custom", "new_custom_value_if_needed")
 
-                current_cell_data: "CellData"  # Type hint for clarity
-
-                if isinstance(cell_value, CellData):
-                    current_cell_data = cell_value
-                elif pd.isna(
-                    cell_value
-                ):  # Handle cases where cell might be None or NaN
-                    logger.warning(
-                        f"Cell at ({r_idx},{c_idx}) in table '{table_id}' is NaN/None. Creating an empty cell."
-                    )
-                    # Assuming CellData is available in the current scope
-                    current_cell_data = CellData(text="", id=None, rect=None)
-                else:
+        # 2. Collect valid cell IDs from the current datatable object
+        # These are the CellData.id values that are expected to exist.
+        valid_cell_ids_in_datatable = set()
+        for r_idx in range(datatable.data.shape[0]):
+            for c_idx in range(datatable.data.shape[1]):
+                cell_obj = datatable.data.iloc[r_idx, c_idx]
+                if isinstance(cell_obj, str):  # Should be CellData
                     logger.error(
-                        f"Item at ({r_idx},{c_idx}) in table '{table_id}' is not CellData or NaN. Type: {type(cell_value)}. Skipping cell."
+                        f"Cell is a string: {cell_obj} in table {table_id}. Skipping this cell."
                     )
                     continue
+                if not isinstance(cell_obj, CellData):
+                    logger.error(
+                        f"Unexpected data type in DataFrame cell: {type(cell_obj)} for table {table_id}. Skipping."
+                    )
+                    continue
+                if cell_obj.id:
+                    valid_cell_ids_in_datatable.add(cell_obj.id)
 
-                # Determine TableCell ID: use provided ID or generate one.
-                cell_id_attr = (
-                    current_cell_data.id
-                    if current_cell_data.id is not None
-                    else f"c_{r_idx}_{c_idx}"
+        # 3. Map existing XML cells by their ID and identify XML cells to remove
+        xml_cells_to_remove_from_table: list[ET.Element] = []
+        current_xml_cell_mapping: dict[str, ET.Element] = {}
+        for cell_xml_node in table_xml_el.findall("./page:TableCell", ns):
+            xml_cell_id = cell_xml_node.attrib.get("id")
+            if xml_cell_id and xml_cell_id in valid_cell_ids_in_datatable:
+                current_xml_cell_mapping[xml_cell_id] = cell_xml_node
+            else:
+                # This XML cell is not present in our datatable.data (by ID) or has no ID
+                xml_cells_to_remove_from_table.append(cell_xml_node)
+
+        for cell_to_remove in xml_cells_to_remove_from_table:
+            logger.debug(
+                f"Removing cell '{cell_to_remove.attrib.get('id', 'N/A')}' from table '{table_id}' as it's not in the processed datatable."
+            )
+            table_xml_el.remove(cell_to_remove)
+
+        # 4. Upsert cells: Iterate through datatable.data and update/create XML cells
+        table_id_suffix_for_textline = (
+            table_id.split("_")[-1] if "_" in table_id else table_id
+        )
+
+        for r_idx in range(datatable.data.shape[0]):
+            for c_idx in range(datatable.data.shape[1]):
+                cell_data_obj: CellData = datatable.data.iloc[r_idx, c_idx]  # type: ignore
+                if not isinstance(cell_data_obj, CellData):  # Defensive check
+                    continue
+
+                # Try to find the XML cell element using CellData.id from the current mapping
+                # This cell_data_obj.id is the *original* ID if the cell existed.
+                xml_cell_el = (
+                    current_xml_cell_mapping.get(cell_data_obj.id)
+                    if cell_data_obj.id
+                    else None
                 )
 
-                table_cell_attributes = {
-                    "id": cell_id_attr,
-                    "row": str(r_idx),
-                    "col": str(c_idx),
-                    "rowSpan": "1",  # Default to 1, assuming no complex spans
-                    "colSpan": "1",  # Default to 1
-                    "custom": "structure {type:line;}",  # As per example
-                }
+                if xml_cell_el is None:
+                    # Cell wasn't in the original XML table (based on its ID) or it's a new cell from postprocessing (CellData.id is None or new)
+                    xml_cell_el = ET.SubElement(
+                        table_xml_el,
+                        ET.QName(ns["page"], "TableCell"),  # type: ignore
+                    )
+                    logger.debug(
+                        f"Creating new XML cell for table '{table_id}' at row {r_idx}, col {c_idx}."
+                    )
+                else:
+                    # Cell exists, clear its children before repopulating
+                    logger.debug(
+                        f"Updating existing XML cell '{cell_data_obj.id}' for table '{table_id}' at new pos row {r_idx}, col {c_idx}."
+                    )
+                    tags_to_clear = [
+                        "Coords",
+                        "CornerPts",
+                        "TextLine",
+                        "AlternativeImage",
+                    ]  # Add any other relevant child tags
+                    for tag_name in tags_to_clear:
+                        for child_el in xml_cell_el.findall(f"./page:{tag_name}", ns):
+                            xml_cell_el.remove(child_el)
 
-                # Create TableCell element with namespace
-                q_tablecell = ET.QName(namespace["ns"], "TableCell")
-                table_cell_el = ET.Element(
-                    q_tablecell,  # type: ignore
-                    attrib=table_cell_attributes,
-                )
+                # Set/Update attributes for the TableCell
+                # cell IDs are c_ROW_COL
+                xml_cell_el.set("id", f"c_{r_idx}_{c_idx}")
+                xml_cell_el.set("row", str(r_idx))
+                xml_cell_el.set("col", str(c_idx))
+                # Default rowSpan and colSpan, assuming no merged cells in CellData
+                xml_cell_el.set("rowSpan", "1")
+                xml_cell_el.set("colSpan", "1")
+                # Default custom attribute from example
+                xml_cell_el.set("custom", "structure {type:line;}")
 
-                # Add Coords and CornerPts to TableCell if rect is available
-                if current_cell_data.rect:
-                    q_coords = ET.QName(namespace["ns"], "Coords")
-                    ET.SubElement(
-                        table_cell_el,
-                        q_coords,  # type: ignore
-                        attrib={"points": current_cell_data.rect.get_coords_str()},
+                # Cell Coordinates
+                # Use a default Rect if cell_data_obj.rect is None to avoid errors
+                # and ensure the XML structure is maintained.
+                current_cell_rect = (
+                    cell_data_obj.rect if cell_data_obj.rect else Rect(0, 0, 0, 0)
+                )  # Default rect
+                if not cell_data_obj.rect:
+                    logger.warning(
+                        f"CellData for table '{table_id}', new ID c_{r_idx}_{c_idx} (orig id: {cell_data_obj.id}) has no Rect. Using default."
                     )
 
-                    q_cornerpts = ET.QName(namespace["ns"], "CornerPts")
-                    corner_pts_el = ET.SubElement(table_cell_el, q_cornerpts)  # type: ignore
-                    corner_pts_el.text = "0 1 2 3"  # As per example
-
-                # Create TextLine element
-                textline_id = (
-                    f"line_{table_id_suffix}_{r_idx}_{c_idx}"  # Generate a unique ID
+                cell_coords_el = ET.SubElement(
+                    xml_cell_el,
+                    ET.QName(ns["page"], "Coords"),  # type: ignore
                 )
-                q_textline = ET.QName(namespace["ns"], "TextLine")
-                text_line_el = ET.Element(
-                    q_textline,  # type: ignore
-                    attrib={
-                        "id": textline_id,
-                        "custom": "readingOrder {index:0;}",  # As per example
-                    },
+                cell_coords_el.set("points", current_cell_rect.get_coords_str())
+
+                # CornerPoints (simple rectangle?)
+                corner_pts_el = ET.SubElement(
+                    xml_cell_el,
+                    ET.QName(ns["page"], "CornerPts"),  # type: ignore
                 )
+                corner_pts_el.text = "0 1 2 3"
 
-                # Add Coords to TextLine if rect is available (same as TableCell's Coords)
-                if current_cell_data.rect:
-                    q_coords_tl = ET.QName(
-                        namespace["ns"], "Coords"
-                    )  # Can reuse q_coords
-                    ET.SubElement(
-                        text_line_el,
-                        q_coords_tl,  # type: ignore
-                        attrib={"points": current_cell_data.rect.get_coords_str()},
-                    )
+                # TextLine, TextEquiv, Unicode
+                text_line_el = ET.SubElement(
+                    xml_cell_el,
+                    ET.QName(ns["page"], "TextLine"),  # type: ignore
+                )
+                # Generate a unique ID for the TextLine
+                # text_line_el.set(
+                #     "id", f"tl_{table_id_suffix_for_textline}_{r_idx}_{c_idx}"
+                # )
+                text_line_el.set("custom", "readingOrder {index:0;}")
 
-                # Create TextEquiv and Unicode elements for the text content
-                q_textequiv = ET.QName(namespace["ns"], "TextEquiv")
-                text_equiv_el = ET.SubElement(text_line_el, q_textequiv)  # type: ignore
+                # Coords for TextLine (often same as cell, or tighter box around text)
+                # Using cell's rect for TextLine's Coords here.
+                text_line_coords_el = ET.SubElement(
+                    text_line_el,
+                    ET.QName(ns["page"], "Coords"),  # type: ignore
+                )
+                text_line_coords_el.set("points", current_cell_rect.get_coords_str())
 
-                q_unicode = ET.QName(namespace["ns"], "Unicode")
-                unicode_el = ET.SubElement(text_equiv_el, q_unicode)  # type: ignore
+                text_equiv_el = ET.SubElement(
+                    text_line_el,
+                    ET.QName(ns["page"], "TextEquiv"),  # type: ignore
+                )
+                unicode_el = ET.SubElement(
+                    text_equiv_el,
+                    ET.QName(ns["page"], "Unicode"),  # type: ignore
+                )
                 unicode_el.text = (
-                    current_cell_data.text if current_cell_data.text is not None else ""
+                    cell_data_obj.text if cell_data_obj.text is not None else ""
                 )
 
-                table_cell_el.append(text_line_el)  # Append TextLine to TableCell
-                table_region_el.append(table_cell_el)  # Append TableCell to TableRegion
+    # Remove tables marked for deletion from the Page element
+    for table_to_remove in tables_to_remove_from_xml:
+        logger.info(
+            f"Removing TableRegion '{table_to_remove.attrib.get('id', 'N/A')}' from XML."
+        )
+        page_element.remove(table_to_remove)
 
+    # Write the modified tree to the output file
     try:
-        # Write the modified XML tree to the output file
         tree.write(output_xml_file, encoding="utf-8", xml_declaration=True)
+        logger.info(f"Successfully created updated XML file: {output_xml_file}")
     except IOError as e:
-        logger.error(f"Failed to write XML to {output_xml_file}: {e}", exc_info=True)
+        logger.error(f"Failed to write XML file {output_xml_file}: {e}")
         raise
-
-
-# def create_updated_xml_file(
-#     source_xml_file: Path, output_xml_file: Path, datatables: list[Datatable]
-# ) -> None:
-#     """
-#     Creates an updated XML file with the given datatables, retaining all metadata in the source XML file.
-
-#     """
-#     tree = ET.parse(source_xml_file, parser=ET.XMLParser(encoding="utf-8"))
-#     root = tree.getroot()
-
-#     datatable_dict: dict[str, Datatable] = {
-#         datatable.id: datatable for datatable in datatables
-#     }
-
-#     tables_to_remove: list[ET.Element] = []
-#     for table in root.findall(".//ns:TableRegion", namespace):  # iterate over tables
-#         if (
-#             len(table.findall(".//ns:TableCell", namespace)) < 2
-#         ):  # skip tables with only one cell, these are headers, or totally empty tables (no rows or columns)
-#             continue
-
-#         table_id = str(table.attrib.get("id"))
-#         if table_id not in datatable_dict:
-#             # Remove tables that passed the previous condition but are not in datatables
-#             tables_to_remove.append(table)
-#             continue
-
-#         datatable = datatable_dict[table_id]
-
-#         # Collect all cell IDs
-#         cell_ids = []
-#         for row in datatable.data.values.tolist():
-#             for cell in row:
-#                 if isinstance(cell, str):
-#                     raise ValueError(f"Cell is a string: {cell} in table {table_id}")
-#                 if cell.id:
-#                     cell_ids.append(cell.id)
-
-#         # Iterate all cells in table and remove those that are not in the datatable
-#         # Also gather mapping of cell IDs to their XML elements
-#         cell_mapping: dict[str, ET.Element] = {}
-#         for cell_el in table.findall(".//ns:TableCell", namespace):
-#             cell_id = cell_el.attrib.get("id")
-#             assert cell_id
-#             if cell_id not in cell_ids:
-#                 table.remove(cell_el)
-#             else:
-#                 cell_mapping[cell_id] = cell_el
-
-#         # Upsert all cells
-#         for y in range(datatable.data.shape[0]):
-#             for x in range(datatable.data.shape[1]):
-#                 cell: CellData = datatable.data.iloc[y, x]  # type: ignore
-#                 # Find the cell in the XML tree
-#                 cell_el: ET.Element = cell_mapping.get(cell.id, None)  # type: ignore
-#                 if cell_el is None:
-#                     # Cell was created in postprocessing
-#                     cell_el = ET.Element("TableCell")
-#                     table.append(
-#                         cell_el
-#                     )  # TODO Should the cells be sorted in the final xml? Currently they aren't
-#                 cell_el.attrib["row"] = str(y)
-#                 cell_el.attrib["col"] = str(x)
-#                 cell_el.attrib["id"] = f"c_{y}_{x}"
-#                 # Update coords if they are available (cell not generated by postprocessing)
-#                 if cell.rect:
-#                     coords_elem: ET.Element = cell_el.find(".//ns:Coords", namespace)  # type: ignore
-#                     coords_elem.attrib["points"] = cell.rect.get_coords_str()
-
-#     page_element = root.find("ns:Page", namespace)
-#     assert page_element is not None, "Page element not found in XML file."
-#     for table in tables_to_remove:
-#         page_element.remove(table)
-
-#     # Modifies global namespace registry...
-#     ET.register_namespace(
-#         "", "http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"
-#     )
-#     tree.write(output_xml_file, encoding="utf-8", xml_declaration=True)
 
 
 def create_handrawn_annotations(
