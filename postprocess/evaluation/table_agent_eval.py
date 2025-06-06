@@ -140,15 +140,6 @@ if __name__ == "__main__":
                 f"Failed to extract significant parts from {actual_xml}"
             )
             opening = int(parts["page_number"])
-            expected_table_count = (
-                print_type_mapping[
-                    books_mapping[book_folder_id].get_type_for_opening(opening)
-                ]
-                .table_annotations[
-                    0
-                ]  # Always gets the annotation for the first page... problematic?
-                .number_of_columns
-            )
 
             if len(ann_tables) != len(act_tables):
                 logger.warning(
@@ -158,6 +149,13 @@ if __name__ == "__main__":
                 continue
 
             for ann_table, act_table in zip(ann_tables, act_tables):
+                expected_table_count = (
+                    print_type_mapping[
+                        books_mapping[book_folder_id].get_type_for_opening(opening)
+                    ]
+                    .get_annotation_for_table_id(int(act_table.id.split("_")[-1]))
+                    .number_of_columns
+                )
                 diff = expected_table_count - act_table.column_count
                 diff_list.append(diff)
                 if diff != 0:

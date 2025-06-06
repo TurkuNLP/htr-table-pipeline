@@ -257,6 +257,21 @@ class PrintType:
     def table_count(self) -> int:
         return len(self.table_annotations)
 
+    def get_annotation_for_table_id(self, table_id: int) -> TableAnnotation:
+        """
+        Returns the table annotation for the given table ID.
+        If the table ID is not found, returns None.
+        """
+        if len(self.table_annotations) == 1:
+            # If there is only one annotation, return it regardless of the table_id
+            return self.table_annotations[0]
+        elif table_id == 0:
+            # Return the first annotation (=left page)
+            return self.table_annotations[0]
+        else:
+            # Return the second annotation (=right page)
+            return self.table_annotations[-1]
+
     def is_printed(self) -> bool:
         """
         Returns True if the print type is print_X.
