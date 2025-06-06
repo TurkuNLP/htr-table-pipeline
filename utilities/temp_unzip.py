@@ -121,7 +121,10 @@ class TempExtractedData:
             if existing_files:
                 logger.info(f"Removing existing zip files in: {self.rezip_to}")
             for file in existing_files:
-                shutil.rmtree(file)
+                if file.is_file():
+                    file.unlink()
+                elif file.is_dir():
+                    shutil.rmtree(file)
 
             zip_dir_parallel_args = [
                 (self.temp_dir / file, (self.rezip_to / file.name).with_suffix(".zip"))

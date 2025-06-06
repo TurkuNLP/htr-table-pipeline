@@ -8,12 +8,12 @@ from postprocess.table_types import ParishBook, PrintType, TableAnnotation
 # Functions for reading metadata from the annotations excel file
 
 
-def extract_significant_parts(filename: str) -> dict[str, str] | None:
+def extract_significant_parts_jpg(filename: str) -> dict[str, str] | None:
     """
     Extracts significant parts from a filename based on a specific pattern.
 
     The expected pattern is:
-    mands-LOCATION_CATEGORY_YEARRANGE_DETAILS_NUMBER.xml
+    autods-LOCATION_CATEGORY_YEARRANGE_DETAILS_NUMBER.xml
 
     Args:
         filename (str): The filename string.
@@ -35,7 +35,7 @@ def extract_significant_parts(filename: str) -> dict[str, str] | None:
     # _                : Underscore separator
     # (\d+)            : Group 5 (page_number): one or more digits
     # \.xml$           : Ends with ".xml"
-    pattern = re.compile(r"^mands-([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$")
+    pattern = re.compile(r"^autods_([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.jpg$")
     match = pattern.match(filename)
 
     if match:
@@ -51,13 +51,98 @@ def extract_significant_parts(filename: str) -> dict[str, str] | None:
         return None
 
 
+def extract_significant_parts_xml(filename: str) -> dict[str, str] | None:
+    """
+    Extracts significant parts from a filename based on a specific pattern.
+
+    The expected pattern is:
+    autods_LOCATION_CATEGORY_YEARRANGE_DETAILS_NUMBER.xml
+
+    Args:
+        filename (str): The filename string.
+
+    Returns:
+        dict: A dictionary containing the extracted parts
+              ("location", "category", "year_range", "details", "page_number")
+              if the pattern matches, otherwise None.
+    """
+    # Regex breakdown:
+    # ^mands-          : Starts with "mands-"
+    # ([a-z_]+)        : Group 1 (location): lowercase letters and underscores
+    # _                : Underscore separator
+    # ([a-z_]+)        : Group 2 (category): lowercase letters and underscores
+    # _                : Underscore separator
+    # (\d{4}-\d{4})    : Group 3 (year_range): YYYY-YYYY
+    # _                : Underscore separator
+    # (.+)             : Group 4 (details): any characters (at least one)
+    # _                : Underscore separator
+    # (\d+)            : Group 5 (page_number): one or more digits
+    # \.xml$           : Ends with ".xml"
+    pattern = re.compile(r"^autods_([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$")
+    match = pattern.match(filename)
+
+    if match:
+        parts = {
+            "parish": match.group(1),
+            "doctype": match.group(2),
+            "year_range": match.group(3),
+            "source": match.group(4),
+            "page_number": match.group(5),
+        }
+        return parts
+    else:
+        return None
+
+
+def get_book_folder_id_for_xml(xml_file: Path) -> str:
+    """
+    Returns the folder ID for a given XML file based on its name.
+    The expected pattern is:
+    autods_LOCATION_CATEGORY_YEARRANGE_DETAILS_NUMBER.xml
+
+    Args:
+        xml_file (Path): The path to the XML file.
+
+    Returns:
+        str: The folder ID if the pattern matches, otherwise None.
+    """
+    xml_file_name = xml_file.name.lower()
+    parts = extract_significant_parts_xml(xml_file_name)
+    if parts is not None:
+        return f"{parts['parish']}_{parts['doctype']}_{parts['year_range']}_{parts['source']}"
+    raise ValueError(
+        f"Could not extract significant parts from XML file name: {xml_file_name}"
+    )
+
+
 def get_print_type_str_for_jpg(jpg_file: Path, annotations_file: Path) -> str | None:
     """
     Returns the print type for a jpg file from the annotations file. Expensive utility function, do not use in production.
     """
     # Get the jpg file name without the extension
     jpg_file_name = jpg_file.name.lower()
-    parts = extract_significant_parts(jpg_file_name)
+    parts = extract_significant_parts_jpg(jpg_file_name)
+    assert parts is not None, f"Could not extract parts from {jpg_file_name}"
+
+    books = get_parish_books_from_annotations(annotations_file)
+
+    for book in books:
+        if (
+            book.folder_id()
+            == f"{parts['parish']}_{parts['doctype']}_{parts['year_range']}_{parts['source']}"
+        ):
+            print_type_str = book.get_type_for_opening(int(parts["page_number"]))
+            return print_type_str
+    return None
+
+
+def get_print_type_str_for_xml(xml_file: Path, annotations_file: Path) -> str | None:
+    """
+    Returns the print type for a jpg file from the annotations file. Expensive utility function, do not use in production.
+    """
+    # Get the jpg file name without the extension
+    jpg_file_name = xml_file.name.lower()
+    parts = extract_significant_parts_xml(jpg_file_name)
     assert parts is not None, f"Could not extract parts from {jpg_file_name}"
 
     books = get_parish_books_from_annotations(annotations_file)
@@ -75,9 +160,20 @@ def get_print_type_str_for_jpg(jpg_file: Path, annotations_file: Path) -> str | 
 def get_print_type_for_jpg(jpg_file: Path, annotations_file: Path) -> PrintType:
     # TODO Currently used by table_corrector_agent.py, move to something that doesn't have to read the annotations file every call...
     print_type_str = get_print_type_str_for_jpg(jpg_file, annotations_file)
-    print_dict = read_layout_annotations(annotations_file)
+    print_dict = read_print_type_annotations(annotations_file)
     if print_type_str is None:
         raise ValueError(f"No print type found for {jpg_file}.")
+
+    return print_dict[print_type_str.lower()]
+
+
+def get_print_type_for_xml(xml_file: Path, annotations_file: Path) -> PrintType:
+    # TODO Currently used by table_corrector_agent.py, move to something that doesn't have to read the annotations file every call...
+    assert xml_file.suffix == ".xml", "The file must be an XML file."
+    print_type_str = get_print_type_str_for_xml(xml_file, annotations_file)
+    print_dict = read_print_type_annotations(annotations_file)
+    if print_type_str is None:
+        raise ValueError(f"No print type found for {xml_file}.")
 
     return print_dict[print_type_str.lower()]
 
@@ -131,7 +227,7 @@ def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook
     return parish_books
 
 
-def read_layout_annotations(annotation_file) -> dict[str, PrintType]:
+def read_print_type_annotations(annotation_file: Path) -> dict[str, PrintType]:
     wb = openpyxl.load_workbook(annotation_file)
     ws = wb.worksheets[1]  # second sheet
     types: dict[str, PrintType] = {}

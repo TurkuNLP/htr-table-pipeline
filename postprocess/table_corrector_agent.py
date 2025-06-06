@@ -33,6 +33,9 @@ async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     if translated_headers is None or len(translated_headers) != len(headers):
         translated_headers = headers
 
+    for i, h in enumerate(translated_headers):
+        translated_headers[i] = str(h)
+
     # Table modification
     table_mod = TableModification(table, headers, translated_headers)
 
@@ -50,7 +53,7 @@ async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
             table_mod.insert_empty_columns,
             # table_mod.shift_table,
         ],
-        max_iters=9,
+        max_iters=4,
     )
 
     # With asyncify the dspy program SHOULD await properly...
@@ -58,21 +61,44 @@ async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
 
     # Run the ReAct agent
     _res = await react(
-        table=table_mod.get_table_head(),  # type: ignore
-        headers=translated_headers,
+        table=str(table_mod.get_table_head()),  # type: ignore
+        headers=headers,
     )
+
+    # Dangerous considering postprocess is async...
+    output_dir = Path(
+        f"postprocess/debug/table_corrector_logs/{dspy.settings.config.lm.model}"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    table_err = (
+        "" if table_mod.table.column_count == table_mod.goal_col_count else "_err"
+    )
+    with open(
+        file=output_dir
+        / Path(f"{table.source_path.stem}_{table.id}{table_err}_history.txt"),
+        mode="w",
+        encoding="utf-8",
+    ) as f:
+        orig_stdout = sys.stdout
+        sys.stdout = f
+        dspy.inspect_history(n=1)
+        sys.stdout = orig_stdout
 
     return table_mod.table
 
 
 class TableModification:
     def __init__(
-        self, table: Datatable, headers: list[str], translated_headers: list[str]
+        self,
+        table: Datatable,
+        headers: list[str],
+        translated_headers: list[str],
     ) -> None:
         self.table: Datatable = table
         self.table.data.columns = list(range(self.table.data.columns.size))
         self.goal_col_count = len(headers)
         self.translated_headers = translated_headers
+        self.tool_calls = 0
 
     def get_position_of_col_with_longest_strings(self) -> int:
         """
@@ -106,9 +132,9 @@ class TableModification:
         return s
 
     def delete_columns(self, column_indices: list[int]) -> str:
-        """
-        Delete the given columns from the table. They data is lost permanently.
-        """
+        """Delete the given columns from the table. They data is lost permanently."""
+        self.tool_calls += 1
+
         try:
             self.table.data.drop(column_indices, axis=1, inplace=True)
             self.table.data.columns = list(range(self.table.data.columns.size))
@@ -117,9 +143,9 @@ class TableModification:
             return "Invalid column indices."
 
     def insert_empty_columns(self, column_indices: list[int]) -> str:
-        """
-        Insert multiple empty columns into the table.
-        """
+        """Insert empty columns at the specified indices. The new columnds are inserted in descending order. If the index is out of bounds, insert at the end."""
+        self.tool_calls += 1
+
         # Sort indices in descending order to avoid shifting issues
         sorted_indices = sorted(column_indices, reverse=True)
 
@@ -150,14 +176,20 @@ class TableModification:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("dspy").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
     # cmd args stuff
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", type=str, required=True, help="Path to jpg file")
+    # parser.add_argument("--file", type=str, required=True, help="Path to jpg file")
 
     args = parser.parse_args()
 
-    output_dir = Path("debug/table_corrector_output")
+    output_dir = Path("postprocess/debug/table_corrector_output")
 
     if output_dir.exists():
         for file in output_dir.glob("*"):
@@ -166,7 +198,9 @@ if __name__ == "__main__":
     else:
         output_dir.mkdir(parents=True)
 
-    jpg_path = Path(args.file)
+    jpg_path = Path(
+        r"C:\Users\leope\Documents\dev\turku-nlp\output_test_async\autods_elimaki_fold_4\images\elimaki\muuttaneet_1875-1887_mko1-4\autods_elimaki_muuttaneet_1875-1887_mko1-4_29.jpg"
+    )
     xml_path = jpg_path.parent / "pageTextClassified" / (jpg_path.stem + ".xml")
 
     # Setup
@@ -174,9 +208,9 @@ if __name__ == "__main__":
 
     random.seed(42)
 
-    # lm = dspy.LM("openai/gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    # lm = dspy.LM("openai/gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
     lm = dspy.LM(
-        "openai/gemini-2.0-flash",
+        "openai/gemini-2.5-flash-preview-05-20",
         api_key=os.getenv("GEMINI_API_KEY"),
         api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
     )

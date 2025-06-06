@@ -280,13 +280,13 @@ def create_updated_xml_file(
 
         if table_id not in datatable_dict:
             tables_to_remove_from_xml.append(table_xml_el)
-            logger.info(
+            logger.debug(
                 f"Table '{table_id}' not in provided datatables. Marking for removal."
             )
             continue
 
         datatable = datatable_dict[table_id]
-        logger.info(f"Processing table '{table_id}'.")
+        logger.debug(f"Processing table '{table_id}'.")
 
         # 1. Update TableRegion Coords
         table_coords_xml = table_xml_el.find("./page:Coords", ns)
@@ -396,10 +396,10 @@ def create_updated_xml_file(
                 current_cell_rect = (
                     cell_data_obj.rect if cell_data_obj.rect else Rect(0, 0, 0, 0)
                 )  # Default rect
-                if not cell_data_obj.rect:
-                    logger.warning(
-                        f"CellData for table '{table_id}', new ID c_{r_idx}_{c_idx} (orig id: {cell_data_obj.id}) has no Rect. Using default."
-                    )
+                # if not cell_data_obj.rect:
+                #     logger.warning(
+                #         f"CellData for table '{table_id}', new ID c_{r_idx}_{c_idx} (orig id: {cell_data_obj.id}) has no Rect. Using default."
+                #     )
 
                 cell_coords_el = ET.SubElement(
                     xml_cell_el,
@@ -447,15 +447,11 @@ def create_updated_xml_file(
 
     # Remove tables marked for deletion from the Page element
     for table_to_remove in tables_to_remove_from_xml:
-        logger.info(
-            f"Removing TableRegion '{table_to_remove.attrib.get('id', 'N/A')}' from XML."
-        )
         page_element.remove(table_to_remove)
 
     # Write the modified tree to the output file
     try:
         tree.write(output_xml_file, encoding="utf-8", xml_declaration=True)
-        logger.info(f"Successfully created updated XML file: {output_xml_file}")
     except IOError as e:
         logger.error(f"Failed to write XML file {output_xml_file}: {e}")
         raise

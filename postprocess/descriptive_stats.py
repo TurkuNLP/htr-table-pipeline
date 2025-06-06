@@ -11,7 +11,7 @@ from tqdm.contrib.concurrent import process_map
 
 from postprocess.metadata import (
     get_parish_books_from_annotations,
-    read_layout_annotations,
+    read_print_type_annotations,
 )
 from postprocess.table_types import ParishBook, PrintType
 from postprocess.xml_utils import extract_datatables_from_xml
@@ -363,7 +363,7 @@ def descriptive_stats_per_book(
 
     # Get the annotations data
     try:
-        printed_types: dict[str, PrintType] = read_layout_annotations(
+        printed_types: dict[str, PrintType] = read_print_type_annotations(
             annotations_file
         )  # print_type_str -> PrintType
         parish_books: list[ParishBook] = get_parish_books_from_annotations(

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Optional, cast
 
 import dspy
@@ -18,7 +19,7 @@ from postprocess.cols_fix import (
 from postprocess.header_gen import generate_header_annotations
 from postprocess.metadata import (
     get_parish_books_from_annotations,
-    read_layout_annotations,
+    read_print_type_annotations,
 )
 from postprocess.table_corrector_agent import correct_table
 from postprocess.table_types import Datatable, ParishBook, PrintType, TableAnnotation
@@ -29,7 +30,7 @@ from utilities.temp_unzip import TempExtractedData
 logger = logging.getLogger(__name__)
 
 # TODO set log levels from cmd args
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 SUBPROCESS_LOG_LEVEL = logging.WARNING
 
 # TODO !!!!!!!!! currently some of the postprocessing code separates file names by underscore
@@ -92,14 +93,35 @@ async def postprocess_printed_async_task(
 
         if table.column_count != col_count_expected:
             # Trim edges of the table to remove empty columns with the name (longest string) column as anchor
-            table = await asyncio.to_thread(
-                remove_empty_columns_using_name_as_anchor,
-                table,
-                annotation,
-            )
+            try:
+                table = await asyncio.to_thread(
+                    remove_empty_columns_using_name_as_anchor,
+                    table,
+                    annotation,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error during remove_empty_columns_using_name_as_anchor for {jpg_path.name} (table {i}): {e}",
+                    exc_info=True,
+                )
 
         if table.column_count != col_count_expected:
             is_problematic = True
+
+        if table.column_count != col_count_expected:
+            # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
+            # TODO Currently keeps an empty row so that it's not recognized as a header by other code, should this be so?
+            try:
+                table = await asyncio.to_thread(
+                    match_col_count_for_empty_tables,
+                    table,
+                    annotation,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error during match_col_count_for_empty_tables for {jpg_path.name} (table {i}): {e}",
+                    exc_info=True,
+                )
 
         # TODO check if col with longest strings is in name col slot
 
@@ -122,23 +144,13 @@ async def postprocess_printed_async_task(
                 f"Skipping LLM correction for {jpg_path.name} (table {i}) since LLM is not enabled or table is not problematic.\n\tis_problematic: {is_problematic}"
             )
 
-        if table.column_count != col_count_expected:
-            # Last resort, corrector agent does this too but some may get through
-            table = await asyncio.to_thread(
-                add_columns_using_name_as_anchor,
-                table,
-                annotation,
-            )
-
-        if table.column_count != col_count_expected:
-            # Completely empty tables (ie empty pages) often have a wrong number of columns, this fixes that
-            # TODO Currently keeps an empty row so that it's not recognized as a header by other code, should this be so?
-            #
-            table = await asyncio.to_thread(
-                match_col_count_for_empty_tables,
-                table,
-                annotation,
-            )
+        # if table.column_count != col_count_expected:
+        #     # Last resort, corrector agent does this too but some may get through
+        #     table = await asyncio.to_thread(
+        #         add_columns_using_name_as_anchor,
+        #         table,
+        #         annotation,
+        #     )
 
         tables[i] = table
 
@@ -174,6 +186,10 @@ def postprocess_printed(
             for jpg_path, tables in data.items()
         ]
         results = await asyncio.gather(*tasks)
+        # results = []
+        # for task in tasks:
+        #     result = await task
+        #     results.append(result)
         return results
 
     for jpg_path, updated_tables in asyncio.run(main()):
@@ -274,7 +290,7 @@ def postprocess(
     ) as data_dir:
         # Get the annotations data
         parish_books = get_parish_books_from_annotations(annotations)
-        printed_types = read_layout_annotations(annotations)
+        printed_types = read_print_type_annotations(annotations)
 
         parish_books_mapping: dict[str, ParishBook] = {}  # book_folder_id -> ParishBook
         for book in parish_books:
@@ -290,8 +306,9 @@ def postprocess(
             logger.info(f"Using model: {model}")
             lm = dspy.LM(
                 model,
-                api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
+                api_key=os.getenv("OPENAI_API_KEY", "KEY_NOT_SET"),
                 api_base=llm_url,
+                max_tokens=15_000,
             )
 
             dspy.configure(lm=lm, async_max_workers=256)
@@ -321,11 +338,17 @@ def postprocess(
             for book_dir in book_dirs
         ]
 
+        # book_data_tuple = []
+        # for args in tqdm(process_map_args):
+        #     result = postprocess_book_parallel_wrapper(args)
+        #     book_data_tuple.append(result)
+        book_data_tuple = process_map(
+            postprocess_book_parallel_wrapper,
+            process_map_args,
+        )
+
         for book_dir, book_data in tqdm(
-            process_map(
-                postprocess_book_parallel_wrapper,
-                process_map_args,
-            ),
+            book_data_tuple,
             desc="Writing updated XML files",
         ):
             assert isinstance(book, ParishBook)
@@ -361,6 +384,7 @@ def postprocess_book_parallel_wrapper(
     logging.getLogger("dspy").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
     return postprocess_book(args[0], args[1], args[2], args[3], args[4])
 
 
@@ -393,8 +417,9 @@ def postprocess_book(
         )
         lm = dspy.LM(
             model,
-            api_key=os.getenv("GEMINI_API_KEY", "KEY_NOT_SET"),
+            api_key=os.getenv("OPENAI_API_KEY", "KEY_NOT_SET"),
             api_base=llm_url,
+            max_tokens=15_000,
         )
         dspy.configure(lm=lm, async_max_workers=256)
 
@@ -503,7 +528,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-url",
         type=str,
-        default="https://generativelanguage.googleapis.com/v1beta/openai/REMOMOEFSMEOFMSEFMO",
+        default="https://generativelanguage.googleapis.com/v1beta/openai/",
         help="The URL for the LLM API.",
     )
 
@@ -520,3 +545,4 @@ if __name__ == "__main__":
     )
 
     # Usage: python -m  postprocess.postprocess --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir" --parishes alajarvi,ahlainen,alaharma --model "" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\postprocess_output"
+    # Gemini local: python -m  postprocess.postprocess --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\eval-data\printed\actual-zipped" --model "openai/gemini-2.5-flash-preview-05-20" --llm-url "https://generativelanguage.googleapis.com/v1beta/openai/" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\eval-data\printed\actual-zipped-postprocessed-gemini"
