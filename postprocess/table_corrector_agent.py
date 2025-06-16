@@ -60,19 +60,20 @@ async def correct_table(table: Datatable, headers: list[str]) -> Datatable:
     react = dspy.asyncify(react)
 
     # Run the ReAct agent
-    _res = await react(
+    res = await react(
         table=str(table_mod.get_table_head()),  # type: ignore
-        headers=headers,
+        headers=translated_headers,
     )
 
-    # Dangerous considering postprocess is async...
     output_dir = Path(
         f"postprocess/debug/table_corrector_logs/{dspy.settings.config.lm.model}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    table_err = (
-        "" if table_mod.table.column_count == table_mod.goal_col_count else "_err"
+    table_problematic = (
+        table_mod.table.column_count == table_mod.goal_col_count
+        or not bool(res.succesful)
     )
+    table_err = "" if table_problematic else "_err"
     with open(
         file=output_dir
         / Path(f"{table.source_path.stem}_{table.id}{table_err}_history.txt"),

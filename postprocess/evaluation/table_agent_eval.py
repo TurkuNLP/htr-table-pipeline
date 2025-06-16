@@ -12,6 +12,7 @@ from postprocess.metadata import (
     read_print_type_annotations,
 )
 from postprocess.table_types import Datatable, ParishBook
+from postprocess.tables_fix import remove_overlapping_tables
 from postprocess.xml_utils import extract_datatables_from_xml
 from utilities.temp_unzip import TempExtractedData
 
@@ -174,5 +175,5 @@ if __name__ == "__main__":
                 f"Difference: {diff}, Count: {count}, Percentage: {count / total_tables * 100:.2f}%"
             )
 
-        # Usage: python -m postprocess.evaluation.table_agent_eval --xml-dir pagePostprocessed --input-dir /scratch/project_2005072/leo/postprocess/eval-data/printed --working-dir $LOCAL_SCRATCH --annotations /scratch/project_2005072/leo/postprocess/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx
+        # Usage: python -m postprocess.evaluation.table_agent_eval --xml-dir pagePostprocessed --input-dir /scratch/project_2005072/leo/postprocess/eval-data/printed --working-dir $LOCAL_SCRATCH --annotations /scratch/project_2005072/leo/postprocess/htr-table-pipeline/annotation-tools/sampling/Moving_record_parishes_with_formats_v2.xlsx  --postprocessed-dir-name actual-zipped-postprocessed
         # Local: python -m postprocess.evaluation.table_agent_eval --xml-dir pagePostprocessed --postprocessed-dir-name actual-zipped-postprocessed-gpt-4.1 --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\eval-data\printed" --annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"

@@ -226,7 +226,17 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
             ]
         )
 
-        tables.append(Datatable(rect, Path(xml_file.name), table_id, data_df))
+        page_list = root.findall(".//ns:Page", namespace)
+        if not page_list or len(page_list) > 1:
+            logger.error(
+                f"Error getting <Page> element in the XML file {xml_file.name}."
+            )
+        jpg_size = (
+            int(page_list[0].attrib.get("imageWidth")),  # type: ignore
+            int(page_list[0].attrib.get("imageHeight")),  # type: ignore
+        )
+
+        tables.append(Datatable(rect, Path(xml_file.name), table_id, data_df, jpg_size))
 
     return tables
 

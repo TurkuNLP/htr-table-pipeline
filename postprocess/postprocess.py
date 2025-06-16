@@ -23,7 +23,7 @@ from postprocess.metadata import (
 )
 from postprocess.table_corrector_agent import correct_table
 from postprocess.table_types import Datatable, ParishBook, PrintType, TableAnnotation
-from postprocess.tables_fix import remove_overlapping_tables
+from postprocess.tables_fix import merge_separated_tables, remove_overlapping_tables
 from postprocess.xml_utils import book_create_updated_xml, extract_datatables_from_xml
 from utilities.temp_unzip import TempExtractedData
 
@@ -77,6 +77,9 @@ async def postprocess_printed_async_task(
     if table_count > table_count_expected:
         tables = remove_overlapping_tables(tables)
         table_count = len(tables)  # Update table count after filtering
+    if table_count > table_count_expected:
+        tables = merge_separated_tables(tables, table_count_expected)
+        table_count = len(tables)
 
     for i, table in enumerate(tables):
         print_type = print_types[book.get_type_for_opening(opening_id)]

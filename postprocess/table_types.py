@@ -94,6 +94,7 @@ class CellData:
     text: str
     id: str | None
     rect: Rect | None
+    cell_type: str = ""
 
     def __hash__(self) -> int:
         return hash(self.text) + hash(self.id)
@@ -110,10 +111,11 @@ class Datatable:
     Represents a table
     """
 
-    rect: Rect
-    source_path: Path  # xml file path
+    rect: Rect  # Rectangle of the table in the image
+    source_path: Path  # XML file path
     id: str  # ID of the table in the XML
     data: pd.DataFrame  # DF of CellData
+    page_size: tuple[int, int]  # (width, height) of the page the table is on
 
     def get_text_df(self) -> pd.DataFrame:
         """
