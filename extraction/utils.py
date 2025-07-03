@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -5,51 +6,56 @@ logger = logging.getLogger(__name__)
 
 
 def read_annotation_file(
-    path: Path,
+    annotation_path: Path,
 ) -> dict[
-    Path,  # xml path
+    Path,
     dict[
-        str,  # table id
-        dict[
-            str,  # item name, e.g. "person_name"
-            list[int],  # list of column indices
-        ],
+        str,
+        dict[str, list[int]],
     ],
 ]:
-    """
-    Reads the jsonl file containing annotations for the evaluation data.
-    Returns a dictionary mapping XML paths to table IDs and their corresponding item columns.
-    """
-    data: dict[
-        Path,  # xml path
-        dict[
-            str,  # table id
-            dict[
-                str,  # item name, e.g. "person_name"
-                list[int],  # list of column indices
-            ],
-        ],
-    ] = {}
+    """Read annotations from JSONL file and organize them by XML path and table ID."""
+    annotations = {}
 
-    if not path.exists():
-        logger.info(f"Annotation file {path} does not exist yet. Returning empty data.")
-        return data
+    if not annotation_path.exists():
+        return annotations
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(annotation_path, "r", encoding="utf-8") as f:
         for line in f:
-            entry = eval(line.strip())  # we write the file so should be safe to eval
-            xml_path = Path(entry["xml_path"])
-            table_id = entry["table_id"]
-            item_name = entry["item_name"]
-            columns = entry["columns"]
+            line = line.strip()
+            if not line:
+                continue
 
-            if xml_path not in data:
-                data[xml_path] = {}
-            if table_id not in data[xml_path]:
-                data[xml_path][table_id] = {}
-            data[xml_path][table_id][item_name] = columns
+            # Parse the line - it might be a dict representation or JSON
+            try:
+                if line.startswith("{") and line.endswith("}"):
+                    # Try JSON first
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        # If JSON fails, try eval (for dict representation)
+                        record = eval(line)
+                else:
+                    record = eval(line)
+            except (json.JSONDecodeError, SyntaxError) as e:
+                print(f"Error parsing line: {line}")
+                continue
 
-    return data
+            xml_path = Path(record["xml_path"])
+            table_id = record["table_id"]
+            item_name = record["item_name"]
+            columns = record["columns"]
+
+            # Initialize nested structure if needed
+            if xml_path not in annotations:
+                annotations[xml_path] = {}
+            if table_id not in annotations[xml_path]:
+                annotations[xml_path][table_id] = {}
+
+            # Store the column mapping
+            annotations[xml_path][table_id][item_name] = columns
+
+    return annotations
 
 
 def write_annotation_file(

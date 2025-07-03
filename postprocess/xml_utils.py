@@ -398,7 +398,10 @@ def create_updated_xml_file(
                 xml_cell_el.set("rowSpan", "1")
                 xml_cell_el.set("colSpan", "1")
                 # Default custom attribute from example
-                xml_cell_el.set("custom", "structure {type:line;}")
+                xml_cell_el.set(
+                    "custom",
+                    f"structure {{type:{cell_data_obj.cell_type if cell_data_obj.cell_type else 'line'};}}",
+                )
 
                 # Cell Coordinates
                 # Use a default Rect if cell_data_obj.rect is None to avoid errors

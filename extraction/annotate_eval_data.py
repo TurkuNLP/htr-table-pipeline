@@ -15,6 +15,8 @@ ITEMS = [
     "person_name",
     "parish",
     "date",
+    "males",
+    "females",
 ]
 
 
@@ -114,3 +116,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+    # Usage:
+    # python -m extraction.annotate_eval_data --input-dir "/scratch/project_2005072/leo/postprocess/extraction-eval"

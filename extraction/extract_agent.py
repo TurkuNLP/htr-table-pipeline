@@ -3,7 +3,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from pprint import pprint
 
 import dspy
 from dotenv import load_dotenv
@@ -41,7 +40,7 @@ def process_table_row(
     return result.extracted_items
 
 
-def process_tables(input_dir: Path, output_file: Path, lm: dspy.LM) -> None:
+def process_tables(input_dir: Path, output_file: Path) -> None:
     """Process all tables in the input directory."""
     # Read existing annotations to know which columns contain which items
     annotations = read_annotation_file(input_dir / "annotations.jsonl")
@@ -51,15 +50,9 @@ def process_tables(input_dir: Path, output_file: Path, lm: dspy.LM) -> None:
     logger.info(f"Found {len(xml_files)} XML files to process")
 
     results = []
-    pprint(annotations)
 
     for xml_path in xml_files:
         logger.info(f"Processing {xml_path.name}")
-
-        if xml_path not in annotations:
-            print(xml_path)
-            logger.warning(f"No annotations found for {xml_path.name}. Skipping file.")
-            continue
 
         # Extract tables from XML
         with open(xml_path, "r", encoding="utf-8") as xml_file:
@@ -67,9 +60,9 @@ def process_tables(input_dir: Path, output_file: Path, lm: dspy.LM) -> None:
 
         # Process each table
         for table in tables:
-            if table.id not in annotations[xml_path]:
+            if xml_path not in annotations or table.id not in annotations[xml_path]:
                 logger.warning(
-                    f"No annotations found for table {table.id} in {xml_path.name}. Skipping table."
+                    f"No annotations found for table {table.id} in {xml_path.name}"
                 )
                 continue
 
@@ -114,8 +107,6 @@ def process_tables(input_dir: Path, output_file: Path, lm: dspy.LM) -> None:
                 if len(results) % 100 == 0:
                     save_results(output_file, results)
 
-                break  # For testing, process only the first row of each table
-
     # Save final results
     save_results(output_file, results)
     logger.info(f"Processing complete. Results saved to {output_file}")
@@ -141,14 +132,13 @@ def main(args: argparse.Namespace) -> None:
 
     # Initialize LLM
     lm = dspy.LM(
-        "openai/gemini-2.5-flash-preview-05-20",
-        api_key=os.getenv("GEMINI_API_KEY"),
-        api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        "openai/gpt-4o-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
     )
     dspy.configure(lm=lm)
 
     # Process tables
-    process_tables(input_dir, output_file, lm)
+    process_tables(input_dir, output_file)
 
 
 if __name__ == "__main__":
@@ -170,4 +160,4 @@ if __name__ == "__main__":
     main(args)
 
     # Usage
-    # python -m extraction.extract_naive --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval"
+    # python -m extraction.extract_naive --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-output"

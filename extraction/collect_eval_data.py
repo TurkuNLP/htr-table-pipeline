@@ -24,19 +24,6 @@ from postprocess.xml_utils import create_updated_xml_file, extract_datatables_fr
 logger = logging.getLogger(__name__)
 
 
-# def predict_htr(
-#     image: MatLike,
-#     processor: TrOCRProcessor,
-#     model: PreTrainedModel | VisionEncoderDecoderModel,
-#     device: torch.device,
-# ) -> str:
-#     # We can directly perform OCR on cropped images.
-#     pixel_values = processor(image, return_tensors="pt").pixel_values.to(device)
-#     generated_ids = model.generate(pixel_values)
-#     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-#     return generated_text
-
-
 def htr_cells(
     cell_imgs: list[MatLike],
     processor: TrOCRProcessor,
@@ -81,6 +68,8 @@ def classify_cells(
             results = yolo_model.predict(batch_slice, verbose=False)
 
         for r in results:
+            print(f"Predictions: {r.names} with scores {r.probs.data}")  # type: ignore
+
             max_index = torch.argmax(r.probs.data).item()  # type: ignore
             label = r.names[max_index]
             score = r.probs.data[max_index].item()  # type: ignore
@@ -113,6 +102,8 @@ def main(args: argparse.Namespace):
         return
 
     logger.info(f"Found {len(xml_files)} XML files.")
+
+    xml_files = xml_files[:1]
 
     jpg_files: list[Path] = []
     xml_to_jpg_map: dict[Path, Path] = {}
@@ -196,6 +187,13 @@ def main(args: argparse.Namespace):
                 min_y = max(cell.rect.y, 0)  # type: ignore
                 max_x = min(cell.rect.x + cell.rect.width, copied_img.shape[1])  # type: ignore
                 max_y = min(cell.rect.y + cell.rect.height, copied_img.shape[0])  # type: ignore
+
+                # Add margins of 5px to the crop area
+                min_x = max(min_x - 5, 0)
+                min_y = max(min_y - 5, 0)
+                max_x = min(max_x + 5, copied_img.shape[1])
+                max_y = min(max_y + 5, copied_img.shape[0])
+
                 crop_img = copied_img[min_y:max_y, min_x:max_x]
 
                 if len(crop_img) == 0:
@@ -207,9 +205,14 @@ def main(args: argparse.Namespace):
                 cell_imgs.append(crop_img)
                 cell_datas.append(cell)
 
+                # save img for debugging
+                cell_img_output_dir = output_dir / "debug"
+                cell_img_output_dir.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(cell_img_output_dir / f"cell_{cell.id}.jpg"), crop_img)
+
         cell_types: list[tuple[str, float]] = []
         if not args.no_gpu:
-            logger.info("Classifying cell images...")
+            logger.debug("Classifying cell images...")
 
             cell_types = classify_cells(
                 yolo_model,
