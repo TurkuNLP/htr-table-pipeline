@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
@@ -134,6 +135,21 @@ class Datatable:
         """
         return len(self.data.columns)
 
+    def get_page_side(self, center_perc=20) -> Literal["left", "right", "both"]:
+        """
+        Returns "left", "right" or "both" depending on the center of the table
+        """
+        table_center = self.rect.get_center()
+        page_width = self.page_size[0]
+        left_bound = page_width * (50 - center_perc / 2.0) / 100.0
+        right_bound = page_width * (50 + center_perc / 2.0) / 100.0
+        if table_center[0] < left_bound:
+            return "left"
+        elif table_center[0] > right_bound:
+            return "right"
+        else:
+            return "both"
+
 
 @dataclass
 class ParishBook:
@@ -161,12 +177,24 @@ class ParishBook:
         """
         Returns the type of the table for the given opening.
         """
+        if not self.book_types:
+            raise ValueError(f"No book types defined for {self.parish_name}. ")
+
+        # Check if the opening is within the range of any book type and return the type
         for book_type, (start, end) in self.book_types.items():
             if start <= opening <= end:
-                if "halfbook" in book_type or "free" in book_type:
-                    return "handrawn misc"  # TODO does this need custom behaviour?
                 return book_type
-        return "handrawn misc"
+
+        # If no type is found, return the one that is closest to the opening
+        closest_type = min(
+            self.book_types.items(),
+            key=lambda item: abs(item[1][0] - opening),
+        )
+        logger.warning(
+            f"No type found for opening {opening} in book {self.parish_name}. "
+            f"Returning closest type {closest_type[0]}."
+        )
+        return closest_type[0]
 
     def __hash__(self) -> int:
         return hash(self.folder_id())
@@ -264,6 +292,7 @@ class PrintType:
         Returns the table annotation for the given table ID.
         If the table ID is not found, returns None.
         """
+        # TODO Table IDs may not actually reflect which page the table is on, need to check this
         if len(self.table_annotations) == 1:
             # If there is only one annotation, return it regardless of the table_id
             return self.table_annotations[0]

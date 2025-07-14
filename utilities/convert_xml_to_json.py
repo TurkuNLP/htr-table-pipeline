@@ -99,7 +99,17 @@ def parse_xml_to_json_objects(xml_path: Path) -> list[dict[str, Any]]:
 
         for cell_el in table_el.findall("ns:TableCell", NAMESPACE):
             cell_coords_el = _safe_find(cell_el, "ns:Coords")
+            if cell_coords_el is None:
+                logger.warning(
+                    f"No <Coords> element found in <TableCell> in {xml_path}. Skipping cell."
+                )
+                continue
             corner_pts_el = _safe_find(cell_el, "ns:CornerPts")
+            if corner_pts_el is None:
+                logger.warning(
+                    f"No 'points' attribute in <Coords> element in {xml_path}. Skipping cell."
+                )
+                continue
 
             cell_data = {
                 "id": cell_el.attrib.get("id"),
@@ -108,10 +118,8 @@ def parse_xml_to_json_objects(xml_path: Path) -> list[dict[str, Any]]:
                 "row_span": int(cell_el.attrib.get("rowSpan", 1)),
                 "col_span": int(cell_el.attrib.get("colSpan", 1)),
                 "custom": cell_el.attrib.get("custom"),
-                "coords": cell_coords_el.attrib.get("points")
-                if cell_coords_el
-                else None,
-                "corner_pts": corner_pts_el.text if corner_pts_el is not None else None,
+                "coords": cell_coords_el.attrib.get("points"),
+                "corner_pts": corner_pts_el.text,
                 "text_lines": [],
             }
 
@@ -123,7 +131,7 @@ def parse_xml_to_json_objects(xml_path: Path) -> list[dict[str, Any]]:
                     "id": tl_el.attrib.get("id"),
                     "custom": tl_el.attrib.get("custom"),
                     "coords": tl_coords_el.attrib.get("points")
-                    if tl_coords_el
+                    if tl_coords_el is not None
                     else None,
                     "text": text,
                 }
@@ -235,3 +243,4 @@ if __name__ == "__main__":
 
     # Usage:
     # python -m utilities.convert_xml_to_json --input-dir /path/to/zipped/parish/data --output-dir /path/to/output/jsonl
+    # python -m utilities.convert_xml_to_json --input-dir "C:\Users\leope\Documents\dev\turku-nlp\parish-zips" --output-dir "C:\Users\leope\Documents\dev\turku-nlp\parish-data-jsonl"

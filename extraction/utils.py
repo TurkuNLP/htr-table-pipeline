@@ -1,14 +1,64 @@
 import json
 import logging
 from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
+
+
+def extract_significant_parts_xml(filename: str) -> dict[str, str] | None:
+    """
+    Extracts significant parts from a filename based on a specific pattern.
+
+    The expected pattern is:
+    autods_PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+    or
+    mands-PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+
+    Where:
+
+    Args:
+        filename (str): The filename string.
+
+    Returns:
+        dict: A dictionary containing the extracted parts
+              ("parish", "doctype", "year_range", "source", "page_number")
+              if the pattern matches, otherwise None.
+    """
+    # Regex breakdown:
+    # ^mands-          : Starts with "autods_" or "mands-"
+    # ([a-z_]+)        : Group 1 (parish): lowercase letters and underscores
+    # _                : Underscore separator
+    # ([a-z_]+)        : Group 2 (doctype): lowercase letters and underscores
+    # _                : Underscore separator
+    # (\d{4}-\d{4})    : Group 3 (year_range): YYYY-YYYY
+    # _                : Underscore separator
+    # (.+)             : Group 4 (source): any characters (at least one)
+    # _                : Underscore separator
+    # (\d+)            : Group 5 (page_number): one or more digits
+    # \.xml$           : Ends with ".xml"
+    pattern = re.compile(
+        r"^(?:autods_|mands-)([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$"
+    )
+    match = pattern.match(filename)
+
+    if match:
+        parts = {
+            "parish": match.group(1),
+            "doctype": match.group(2),
+            "year_range": match.group(3),
+            "source": match.group(4),
+            "page_number": match.group(5),
+        }
+        return parts
+    else:
+        return None
 
 
 def read_annotation_file(
     annotation_path: Path,
 ) -> dict[
-    Path,
+    str,  # xml file name with suffix
     dict[
         str,
         dict[str, list[int]],
@@ -41,7 +91,7 @@ def read_annotation_file(
                 print(f"Error parsing line: {line}")
                 continue
 
-            xml_path = Path(record["xml_path"])
+            xml_path = Path(record["xml_path"]).name
             table_id = record["table_id"]
             item_name = record["item_name"]
             columns = record["columns"]

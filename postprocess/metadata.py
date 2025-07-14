@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+from typing import Literal
 
 import openpyxl
 
@@ -56,29 +57,35 @@ def extract_significant_parts_xml(filename: str) -> dict[str, str] | None:
     Extracts significant parts from a filename based on a specific pattern.
 
     The expected pattern is:
-    autods_LOCATION_CATEGORY_YEARRANGE_DETAILS_NUMBER.xml
+    autods_PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+    or
+    mands-PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+
+    Where:
 
     Args:
         filename (str): The filename string.
 
     Returns:
         dict: A dictionary containing the extracted parts
-              ("location", "category", "year_range", "details", "page_number")
+              ("parish", "doctype", "year_range", "source", "page_number")
               if the pattern matches, otherwise None.
     """
     # Regex breakdown:
-    # ^mands-          : Starts with "mands-"
-    # ([a-z_]+)        : Group 1 (location): lowercase letters and underscores
+    # ^mands-          : Starts with "autods_" or "mands-"
+    # ([a-z_]+)        : Group 1 (parish): lowercase letters and underscores
     # _                : Underscore separator
-    # ([a-z_]+)        : Group 2 (category): lowercase letters and underscores
+    # ([a-z_]+)        : Group 2 (doctype): lowercase letters and underscores
     # _                : Underscore separator
     # (\d{4}-\d{4})    : Group 3 (year_range): YYYY-YYYY
     # _                : Underscore separator
-    # (.+)             : Group 4 (details): any characters (at least one)
+    # (.+)             : Group 4 (source): any characters (at least one)
     # _                : Underscore separator
     # (\d+)            : Group 5 (page_number): one or more digits
     # \.xml$           : Ends with ".xml"
-    pattern = re.compile(r"^autods_([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$")
+    pattern = re.compile(
+        r"^(?:autods_|mands-)([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$"
+    )
     match = pattern.match(filename)
 
     if match:
@@ -201,7 +208,7 @@ def parse_book_types(raw_book_type: str) -> dict[str, tuple[int, int]]:
 
 def get_parish_books_from_annotations(annotations_file: Path) -> list[ParishBook]:
     """
-    Returns a list of parish books from the annotations file.
+    Returns a list of parish books from the annotations excel file.
     """
     wb = openpyxl.load_workbook(annotations_file)
     ws = wb.worksheets[0]  # first sheet
@@ -330,3 +337,112 @@ def read_print_type_annotations(annotation_file: Path) -> dict[str, PrintType]:
         )
         types[print_type] = type
     return types
+
+
+class BookAnnotationReader:
+    def __init__(self, annotation_file: Path):
+        """
+        Initializes the BookAnnotationReader with the path to the annotations file.
+        """
+        self.annotation_file = annotation_file
+        self.parish_books = get_parish_books_from_annotations(annotation_file)
+        self.parish_book_mapping: dict[str, ParishBook] = {
+            book.folder_id(): book for book in self.parish_books
+        }
+        self.print_type_mapping = read_print_type_annotations(annotation_file)
+
+    def get_book(self, id: str) -> ParishBook:
+        """
+        Returns the ParishBook object for the given book ID.
+        The ID is expected to be in the format 'parish_doctype_yearrange_source'.
+        """
+        if id not in self.parish_book_mapping:
+            raise ValueError(f"Book with ID {id} not found in annotations.")
+        return self.parish_book_mapping[id]
+
+    def get_book_for_xml(self, xml_file: str) -> ParishBook:
+        """
+        Returns the ParishBook object for the given XML file.
+        The XML file name is expected to follow the pattern:
+        autods_parish_doctype_yearrange_source_page.xml
+        """
+        assert xml_file.endswith(".xml"), "The file must be an XML file."
+        parts = extract_significant_parts_xml(xml_file.lower())
+        if parts is None:
+            raise ValueError(f"Could not extract significant parts from {xml_file}")
+        return self.get_book(
+            f"{parts['parish']}_{parts['doctype']}_{parts['year_range']}_{parts['source']}"
+        )
+
+    def get_print_type(self, print_type_str: str) -> PrintType:
+        """
+        Returns the PrintType object for the given print type string.
+        The string is expected to be in lowercase.
+        """
+        if print_type_str not in self.print_type_mapping:
+            raise ValueError(f"Print type {print_type_str} not found in annotations.")
+        return self.print_type_mapping[print_type_str]
+
+    def get_table_headers(
+        self,
+        book_id: str,  # e.g. "ahlainen_muuttaneet_1900-1910_ap_sis"
+        opening: int,  # e.g. "1" or "2" for the first or second opening of the book
+        page_side: Literal[
+            "left", "right", "both"
+        ] = "both",  # "both" means table covers both left and right pages
+    ) -> list[str] | None:
+        """
+        Returns the column headers for the given opening and book.
+
+        If the header's aren't known, returns None.
+        """
+        book = self.get_book(book_id)
+        type_str = book.get_type_for_opening(opening)
+        if "print" not in type_str.lower():
+            return None
+        print_type = self.get_print_type(type_str.lower())
+        if page_side == "both":
+            return print_type.table_annotations[0].col_headers
+        if page_side == "left":
+            return print_type.table_annotations[0].col_headers
+        if page_side == "right":
+            return print_type.table_annotations[-1].col_headers
+        return None
+
+    def get_table_direction(
+        self,
+        book_id: str,  # e.g. "ahlainen_muuttaneet_1900-1910_ap_sis"
+        opening: int,  # e.g. "1" or "2" for the first or second opening of the book
+        page_side: Literal[
+            "left", "right", "both"
+        ],  # "both" means table covers both left and right pages
+    ) -> str:
+        """
+        Returns in/out for the given opening and book.
+        """
+        book = self.get_book(book_id)
+        type_str = book.get_type_for_opening(opening)
+        if "print" in type_str.lower():
+            # Printed books
+            print_type = self.get_print_type(type_str.lower())
+            if page_side == "both":
+                return print_type.table_annotations[0].direction
+            if page_side == "left":
+                return print_type.table_annotations[0].direction
+            if page_side == "right":
+                return print_type.table_annotations[-1].direction
+        else:
+            # Handwritten books
+            # Use regex to find the direction in the book type
+            return extract_in_out(type_str.lower())
+
+
+def extract_in_out(text: str) -> str:
+    """
+    Extract in/out information from a string.
+    Returns the in/out part if found, empty string otherwise.
+    Preserves the order of in/out or out/in.
+    """
+    pattern = r"\b((?:in/out|out/in|in|out))$"
+    match = re.search(pattern, text.lower().strip())
+    return match.group(1) if match else ""

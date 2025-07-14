@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 
 import dspy
 from dotenv import load_dotenv
@@ -38,6 +39,9 @@ def process_table_row(
     extract = dspy.Predict(RowExtraction)
     result = extract(row_text=row_text, item_types=ITEMS)
     return result.extracted_items
+
+
+
 
 
 def process_tables(input_dir: Path, output_file: Path) -> None:
