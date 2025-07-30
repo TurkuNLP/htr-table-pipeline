@@ -4,6 +4,7 @@ import re
 from typing import Iterable, Protocol
 
 
+from extraction.extract_agent import ExtractAgentConfig
 from extraction.utils import BookMetadata, extract_file_metadata
 from utilities.temp_unzip import TempExtractedData
 
@@ -47,12 +48,22 @@ class AnnotatedContextSource(DataSource):
     Used by the extraction agent.
     """
 
-    def __init__(self, input_dir: Path, zips_dir: Path):
+    def __init__(
+        self,
+        input_dir: Path,
+        zips_dir: Path,
+        extract_dir: Path | None = None,
+    ):
         super().__init__(input_dir)
         self.original_zips_dir = zips_dir
 
+        # Get the needed parishes so that we don't have to unzip extra ones
+        parish_list = [x.parish for x in self.get_books()]
+
         # Manually manage the context manager
-        self._temp_extracted_data = TempExtractedData(zip_dir=zips_dir)
+        self._temp_extracted_data = TempExtractedData(
+            zip_dir=zips_dir, override_temp_dir=extract_dir, only_extract=parish_list
+        )
         self.books_dir = self._temp_extracted_data.__enter__()
 
     def __del__(self):

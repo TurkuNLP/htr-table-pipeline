@@ -11,6 +11,7 @@ import dspy
 import dspy.predict
 import pandas as pd
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from extraction.data_source import AnnotatedContextSource
 from extraction.utils import BookMetadata, FileMetadata, extract_file_metadata
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
     logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
+file_limit: int | None = None
+
 
 class TableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
@@ -44,7 +47,7 @@ class TableExtraction(dspy.Signature):
         "date_yyyy-mm-dd",
     ]
 
-    instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
+    book_instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
     table: str = dspy.InputField(desc="The table text containing multiple rows")
     table_direction: str = dspy.InputField(
         desc="Whether the table depicts people moving in or out of the parish."
@@ -95,14 +98,14 @@ class BookInstructions(dspy.Signature):
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
     parish: str = dspy.InputField(desc="The parish the book is from.")
 
-    instructions: str = dspy.OutputField(desc="Generated extraction instructions.")
+    book_instructions: str = dspy.OutputField(desc="Generated extraction instructions.")
 
 
 # --- Data Structures ---
 
 
 @dataclass
-class AppConfig:
+class ExtractAgentConfig:
     """Application configuration settings."""
 
     input_dir: Path
@@ -111,6 +114,7 @@ class AppConfig:
     output_file: Path
     debug_dir: Path = Path("debug")
     save_debug_files: bool = True
+    extract_dir: Path | None = None
     batch_size: int = 10
     file_limit: int | None = None
     llm_model: str = "openai/gemini-2.0-flash"
@@ -140,7 +144,7 @@ def process_table_batch(
         year_range=file_metadata.year_range,
         parish=file_metadata.parish,
         item_types=TableExtraction.ITEMS_TO_EXTRACT,
-        instructions=instructions,
+        book_instructions=instructions,
     )
 
     logger.info(f"LLM usage for batch: {result.get_lm_usage()}")
@@ -177,7 +181,7 @@ def process_single_table(
     file_metadata: FileMetadata,
     annotations: BookAnnotationReader,
     instructions: str,
-    config: AppConfig,
+    config: ExtractAgentConfig,
 ) -> list[RowExtractionResult]:
     """
     Processes a full table by batching its rows, extracting data,
@@ -252,6 +256,7 @@ def process_single_table(
             metadata=file_metadata,
             extracted_items=all_results,
             config=config,
+            book_instructions=instructions,
             table_id=table.id,
         )
 
@@ -262,7 +267,8 @@ def process_book(
     book_metadata: BookMetadata,
     data_source: AnnotatedContextSource,
     annotations: BookAnnotationReader,
-    config: AppConfig,
+    config: ExtractAgentConfig,
+    tqdm: tqdm | None = None,
 ) -> None:
     """Processes a single book by extracting data from its XML files."""
     parish_book = annotations.get_book(book_metadata.book_id)
@@ -307,11 +313,15 @@ def process_book(
         year_range=book_metadata.year_range,
         parish=book_metadata.parish,
     )
-    instructions: str = result.instructions
+    instructions: str = result.book_instructions
 
     # 2) process each of the xml files
     book_files = data_source.get_book_files(book_metadata)
     for xml_file in book_files:
+        if config.file_limit:
+            config.file_limit -= 1
+            if config.file_limit < 0:
+                break
         logger.info(f"Processing XML file: {xml_file.name}")
         file_metadata = extract_file_metadata(xml_file.name)
         if not file_metadata:
@@ -350,28 +360,45 @@ def process_book(
         save_results(config.output_file, all_results)
 
 
-def run_extraction_pipeline(config: AppConfig) -> None:
+def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
     # Unzips the autod zip files... this takes a while
-    with AnnotatedContextSource(config.input_dir, config.autod_zips_dir) as file_source:
-        xml_files = sorted(file_source.get_files())
+    with AnnotatedContextSource(
+        input_dir=config.input_dir,
+        zips_dir=config.autod_zips_dir,
+        extract_dir=config.extract_dir,
+    ) as file_source:
         if config.file_limit:
-            xml_files = xml_files[: config.file_limit]
-
-        logger.info(f"Found {len(xml_files)} XML files to process.")
+            logger.info(
+                f"Limiting processing to {config.file_limit} XML files for debugging."
+            )
 
         annotations = BookAnnotationReader(config.book_annotations_path)
-        all_results = []
 
-        for book_metadata in file_source.get_books():
-            file_source.get_book_files(book_metadata)
-            logger.info(f"Processing book: {book_metadata.book_id}")
-            process_book(
-                book_metadata=book_metadata,
-                data_source=file_source,
-                annotations=annotations,
-                config=config,
-            )
+        xml_count: int = sum(
+            [
+                len(list(file_source.get_book_files(book_metadata)))
+                for book_metadata in file_source.get_books()
+            ]
+        )
+        if config.file_limit:
+            xml_count = min(xml_count, config.file_limit)
+
+        with tqdm(total=xml_count) as progress:
+            for book_metadata in file_source.get_books():
+                if config.file_limit:
+                    if config.file_limit < 0:
+                        # This is changed in process_book, but we also want to break this loop
+                        break
+                file_source.get_book_files(book_metadata)
+                logger.info(f"Processing book: {book_metadata.book_id}")
+                process_book(
+                    book_metadata=book_metadata,
+                    data_source=file_source,
+                    annotations=annotations,
+                    config=config,
+                    tqdm=progress,
+                )
 
         logger.info(f"Processing complete. Final results saved to {config.output_file}")
 
@@ -396,7 +423,8 @@ def save_debug_info(
     table_headers: list[str] | None,
     metadata: FileMetadata,
     extracted_items: list[RowExtractionResult],
-    config: AppConfig,
+    config: ExtractAgentConfig,
+    book_instructions: str,
     table_id: str,
 ) -> None:
     """Saves detailed information for a single processed table for debugging."""
@@ -414,6 +442,8 @@ def save_debug_info(
             f.write(f"Table Headers: {table_headers}\n")
             f.write(f"Year Range: {metadata.year_range}\n")
             f.write(f"Parish: {metadata.parish}\n\n")
+            f.write("--- Book instructions ---\n")
+            f.write(book_instructions)
             f.write("--- Extracted Items ---\n")
             for item in extracted_items:
                 f.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
@@ -423,7 +453,7 @@ def save_debug_info(
         logger.error(f"Failed to write debug file {debug_file}: {e}")
 
 
-def setup_dspy_lm(config: AppConfig) -> None:
+def setup_dspy_lm(config: ExtractAgentConfig) -> None:
     """Initializes and configures the dspy language model."""
     api_key = (
         os.getenv("GEMINI_API_KEY")
@@ -495,6 +525,16 @@ def main() -> None:
         dest="save_debug_files",
         help="Disable saving of detailed debug files for each table.",
     )
+    parser.add_argument(
+        "--env-file",
+        type=str,
+        default=".env",
+    )
+    parser.add_argument(
+        "--extract-dir",
+        type=str,
+        help="Where the autod zips should temporarily be extracted to.",
+    )
 
     args = parser.parse_args()
 
@@ -513,9 +553,11 @@ def main() -> None:
         return
 
     # Load environment variables from .env file in the project root
-    load_dotenv(Path(__file__).parent.parent / ".env")
+    if Path(args.env_file).is_file():
+        logger.info(f"Loading environment variables from {args.env_file}")
+    load_dotenv(Path(args.env_file))
 
-    config = AppConfig(
+    config = ExtractAgentConfig(
         input_dir=input_dir,
         book_annotations_path=book_annotations_path,
         autod_zips_dir=autod_zips_dir,
@@ -523,6 +565,7 @@ def main() -> None:
         batch_size=args.batch_size,
         file_limit=args.file_limit,
         save_debug_files=args.save_debug_files,
+        extract_dir=Path(args.extract_dir) if args.extract_dir else None,
     )
 
     try:
@@ -536,4 +579,4 @@ if __name__ == "__main__":
     main()
 
     # Usage:
-    # python -m extraction.main --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval" --book-annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --file-limit 2 --output-filename "test_run_output.jsonl"
+    # python -m extraction.extract_agent --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval" --book-annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --file-limit 2 --output-filename "test_run_output.jsonl"
