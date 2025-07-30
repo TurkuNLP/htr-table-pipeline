@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -6,51 +7,96 @@ import re
 logger = logging.getLogger(__name__)
 
 
-def extract_significant_parts_xml(filename: str) -> dict[str, str] | None:
+@dataclass(frozen=True)
+class FileMetadata:
+    """Encapsulates metadata extracted from a filename."""
+
+    parish: str
+    doctype: str
+    year_range: str
+    source: str
+    page_number: int
+
+    @property
+    def book_id(self) -> str:
+        """Returns a unique book ID based on the metadata."""
+        return f"{self.parish}_{self.doctype}_{self.year_range}_{self.source}"
+
+
+@dataclass(frozen=True)
+class BookMetadata:
+    parish: str
+    book_type: str
+    year_range: str
+    source: str
+
+    @property
+    def book_id(self) -> str:
+        """Returns a unique book ID based on the metadata."""
+        return f"{self.parish}_{self.book_type}_{self.year_range}_{self.source}"
+
+    def get_book_dir_name(self) -> str:
+        """
+        Returns a directory name for the book based on its metadata.
+
+        This matches the names used in the autods zip files, e.g. muuttaneet_1870-1881_ap_ulos
+        """
+        return f"{self.book_type}_{self.year_range}_{self.source}"
+
+
+def extract_file_metadata(
+    filename: str, file_type: str = ".xml"
+) -> FileMetadata | None:
     """
     Extracts significant parts from a filename based on a specific pattern.
 
     The expected pattern is:
-    autods_PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+    autods_PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.{file_type}
     or
-    mands-PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.xml
+    mands-PARISH_DOCTYPE_YEARRANGE_SOURCE_PAGENUMBER.{file_type}
+
+    Example:
+    autods_virrat_muuttaneet_1811-1812_uk501_1.xml
 
     Where:
 
     Args:
         filename (str): The filename string.
+        file_type (str): The type of file, default is ".xml".
 
     Returns:
         dict: A dictionary containing the extracted parts
               ("parish", "doctype", "year_range", "source", "page_number")
               if the pattern matches, otherwise None.
     """
+    # Remove leading dot if present in file_type
+    file_extension = file_type.lstrip(".")
+
     # Regex breakdown:
-    # ^mands-          : Starts with "autods_" or "mands-"
-    # ([a-z_]+)        : Group 1 (parish): lowercase letters and underscores
-    # _                : Underscore separator
-    # ([a-z_]+)        : Group 2 (doctype): lowercase letters and underscores
-    # _                : Underscore separator
-    # (\d{4}-\d{4})    : Group 3 (year_range): YYYY-YYYY
-    # _                : Underscore separator
-    # (.+)             : Group 4 (source): any characters (at least one)
-    # _                : Underscore separator
-    # (\d+)            : Group 5 (page_number): one or more digits
-    # \.xml$           : Ends with ".xml"
+    # ^(?:autods_|mands-) : Starts with "autods_" or "mands-"
+    # ([a-z_]+)           : Group 1 (parish): lowercase letters and underscores
+    # _                   : Underscore separator
+    # ([a-z_]+)           : Group 2 (doctype): lowercase letters and underscores
+    # _                   : Underscore separator
+    # (\d{4}-\d{4})       : Group 3 (year_range): YYYY-YYYY
+    # _                   : Underscore separator
+    # (.+)                : Group 4 (source): any characters (at least one)
+    # _                   : Underscore separator
+    # (\d+)               : Group 5 (page_number): one or more digits
+    # \.{file_extension}$ : Ends with the specified file extension
     pattern = re.compile(
-        r"^(?:autods_|mands-)([a-z_]+)_([a-z_]+)_(\d{4}-\d{4})_(.+)_(\d+)\.xml$"
+        rf"^(?:autods_|mands-)([a-z_]+)_([a-z_]+)_(\d{{4}}-\d{{4}})_(.+)_(\d+)\.{re.escape(file_extension)}$",
     )
     match = pattern.match(filename)
 
     if match:
-        parts = {
-            "parish": match.group(1),
-            "doctype": match.group(2),
-            "year_range": match.group(3),
-            "source": match.group(4),
-            "page_number": match.group(5),
-        }
-        return parts
+        return FileMetadata(
+            parish=match.group(1),
+            doctype=match.group(2),
+            year_range=match.group(3),
+            source=match.group(4),
+            page_number=int(match.group(5)),
+        )
     else:
         return None
 

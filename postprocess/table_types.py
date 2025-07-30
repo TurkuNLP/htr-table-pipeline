@@ -173,6 +173,12 @@ class ParishBook:
         """
         return f"{self.parish_name}_{self.doctype}_{self.years}_{self.source.split('_')[-1].lower()}"
 
+    def is_printed(self: "ParishBook") -> bool:
+        """
+        Returns True if the book is printed, False otherwise.
+        """
+        return self.book_types is not None and len(self.book_types) > 0
+
     def get_type_for_opening(self: "ParishBook", opening: int) -> str:
         """
         Returns the type of the table for the given opening.

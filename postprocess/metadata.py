@@ -360,24 +360,13 @@ class BookAnnotationReader:
             raise ValueError(f"Book with ID {id} not found in annotations.")
         return self.parish_book_mapping[id]
 
-    def get_book_for_xml(self, xml_file: str) -> ParishBook:
-        """
-        Returns the ParishBook object for the given XML file.
-        The XML file name is expected to follow the pattern:
-        autods_parish_doctype_yearrange_source_page.xml
-        """
-        assert xml_file.endswith(".xml"), "The file must be an XML file."
-        parts = extract_significant_parts_xml(xml_file.lower())
-        if parts is None:
-            raise ValueError(f"Could not extract significant parts from {xml_file}")
-        return self.get_book(
-            f"{parts['parish']}_{parts['doctype']}_{parts['year_range']}_{parts['source']}"
-        )
-
     def get_print_type(self, print_type_str: str) -> PrintType:
         """
         Returns the PrintType object for the given print type string.
         The string is expected to be in lowercase.
+
+        print_type_str: str
+            The print type string to look up, e.g. "print 21".
         """
         if print_type_str not in self.print_type_mapping:
             raise ValueError(f"Print type {print_type_str} not found in annotations.")
@@ -435,6 +424,19 @@ class BookAnnotationReader:
             # Handwritten books
             # Use regex to find the direction in the book type
             return extract_in_out(type_str.lower())
+
+    def get_expected_table_count(self, book_id: str, opening: int) -> int:
+        """
+        Returns the expected number of tables for the given book and opening.
+        """
+        book = self.get_book(book_id)
+        type_str = book.get_type_for_opening(opening)
+        if "print" in type_str.lower():
+            print_type = self.get_print_type(type_str.lower())
+            return len(print_type.table_annotations)
+        else:
+            # Handwritten books
+            return 1
 
 
 def extract_in_out(text: str) -> str:

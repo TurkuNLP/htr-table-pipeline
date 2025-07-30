@@ -2,166 +2,538 @@ import argparse
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-import re
+from random import sample
+from typing import Any, ClassVar
 
 import dspy
+import dspy.predict
+import pandas as pd
 from dotenv import load_dotenv
 
-from extraction.utils import read_annotation_file
+from extraction.data_source import AnnotatedContextSource
+from extraction.utils import BookMetadata, FileMetadata, extract_file_metadata
+from postprocess.metadata import BookAnnotationReader
+from postprocess.table_types import Datatable
+from postprocess.tables_fix import merge_separated_tables, remove_overlapping_tables
 from postprocess.xml_utils import extract_datatables_from_xml
 
+# --- Configuration & Constants ---
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# Items we want to extract from each row
-ITEMS = ["person_name", "parish", "date"]
+for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
+    logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
 
-class RowExtraction(dspy.Signature):
-    """Extract person name, parish, and date from a row of text from an 1800s Finnish church migration document."""
+class TableExtraction(dspy.Signature):
+    """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
 
-    row_text: str = dspy.InputField(desc="The text from one row of the table")
-    item_types: list[str] = dspy.InputField(desc="The items to extract from the row")
-    extracted_items: dict[str, str | None] = dspy.OutputField(
-        desc="Dictionary mapping item types to extracted values. Use None if item not found."
+    ITEMS_TO_EXTRACT: ClassVar[list[str]] = [
+        "person_name",
+        "occupation",
+        "men_count",
+        "women_count",
+        "parish_from",
+        "parish_to",
+        "date_original",
+        "date_yyyy-mm-dd",
+    ]
+
+    instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
+    table: str = dspy.InputField(desc="The table text containing multiple rows")
+    table_direction: str = dspy.InputField(
+        desc="Whether the table depicts people moving in or out of the parish."
+    )
+    table_headers: list[str] | None = dspy.InputField(
+        desc="The headers of the table, if available."
+    )
+    item_types: list[str] = dspy.InputField(desc="The items to extract from each row.")
+    year_range: str = dspy.InputField(desc="The year range the source book covers.")
+    parish: str = dspy.InputField(desc="The parish the book is from.")
+
+    extracted_items: list[dict[str, str | None]] = dspy.OutputField(
+        desc=(
+            "A list of Dictionaries mapping item types to extracted values. "
+            "Use None if an item is not found. The list length must match "
+            "the number of rows in the input table."
+        )
     )
 
 
-def process_table_row(
-    row_text: str,
-) -> dict[str, str | None]:
-    """Process a single row of text to extract the required items."""
-    # logger.info(f"Processing row: {row_text}")
-    # return {
-    #     item: None
-    #     for item in ITEMS  # Placeholder for actual extraction logic
-    # }
-    extract = dspy.Predict(RowExtraction)
-    result = extract(row_text=row_text, item_types=ITEMS)
+class BookInstructions(dspy.Signature):
+    """
+    Write instructions for an LLM on how to extract data from this specific book.
+
+    You shouldn't write the whole prompt, but rather the part that is specific to this book.
+    Your instructions will be appended to the general instructions for the extraction task.
+    """
+
+    ITEMS_TO_EXTRACT: ClassVar[list[str]] = [
+        "person_name",
+        "occupation",
+        "men_count",
+        "women_count",
+        "parish_from",
+        "parish_to",
+        "date_original",
+        "date_yyyy-mm-dd",
+    ]
+
+    book_metadata: BookMetadata = dspy.InputField(
+        desc="Metadata of the book to process."
+    )
+    table_sample: str = dspy.InputField()
+    table_headers: list[str] | None = dspy.InputField(
+        desc="The headers of the table, if available."
+    )
+    item_types: list[str] = dspy.InputField(desc="The items to extract from each row.")
+    year_range: str = dspy.InputField(desc="The year range the source book covers.")
+    parish: str = dspy.InputField(desc="The parish the book is from.")
+
+    instructions: str = dspy.OutputField(desc="Generated extraction instructions.")
+
+
+# --- Data Structures ---
+
+
+@dataclass
+class AppConfig:
+    """Application configuration settings."""
+
+    input_dir: Path
+    book_annotations_path: Path
+    autod_zips_dir: Path
+    output_file: Path
+    debug_dir: Path = Path("debug")
+    save_debug_files: bool = True
+    batch_size: int = 10
+    file_limit: int | None = None
+    llm_model: str = "openai/gemini-2.0-flash"
+    max_tokens: int = 8192
+
+
+# --- Core Logic ---
+
+
+def process_table_batch(
+    table_batch_df: pd.DataFrame,
+    table_direction: str,
+    table_headers: list[str] | None,
+    file_metadata: FileMetadata,
+    instructions: str,
+) -> list[dict[str, str | None]]:
+    """Processes a single batch of table rows using the dspy signature."""
+    table_render = table_batch_df.to_markdown(index=False)
+    if not isinstance(table_render, str):
+        raise TypeError("Pandas DataFrame could not be rendered to a string.")
+
+    extractor = dspy.Predict(TableExtraction)
+    result = extractor(
+        table=table_render,
+        table_direction=table_direction,
+        table_headers=table_headers,
+        year_range=file_metadata.year_range,
+        parish=file_metadata.parish,
+        item_types=TableExtraction.ITEMS_TO_EXTRACT,
+        instructions=instructions,
+    )
+
+    logger.info(f"LLM usage for batch: {result.get_lm_usage()}")
+
+    if not result.extracted_items:
+        logger.error("No items were extracted by the dspy call.")
+        return []
+
     return result.extracted_items
 
 
+@dataclass(frozen=True)
+class RowExtractionResult:
+    """Encapsulates the result of extracting data from a single row."""
+
+    source_xml: str
+    table_id: str
+    row_idx: int
+    extracted_data: dict[str, str | None]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Converts the result to a dictionary for easy serialization."""
+        return {
+            "source_xml": self.source_xml,
+            "table_id": self.table_id,
+            "row_idx": self.row_idx,
+            "extracted_data": self.extracted_data,
+        }
 
 
+def process_single_table(
+    table: Datatable,
+    page_side: str,
+    file_metadata: FileMetadata,
+    annotations: BookAnnotationReader,
+    instructions: str,
+    config: AppConfig,
+) -> list[RowExtractionResult]:
+    """
+    Processes a full table by batching its rows, extracting data,
+    and structuring the results.
 
-def process_tables(input_dir: Path, output_file: Path) -> None:
-    """Process all tables in the input directory."""
-    # Read existing annotations to know which columns contain which items
-    annotations = read_annotation_file(input_dir / "annotations.jsonl")
+    Args:
+        table (Datatable): The table to process.
+        page_side (str): The side of the page the table is on (e.g., "left", "right", "both").
+        file_metadata (FileMetadata): Metadata about the file containing the table.
+        annotations (BookAnnotationReader): Annotations for the book.
+        instructions (str): Instructions for the LLM on how to extract data.
+        config (AppConfig): Application configuration settings.
 
-    xml_files = list(input_dir.glob("*.xml"))
-    xml_files = xml_files[:2]
-    logger.info(f"Found {len(xml_files)} XML files to process")
+    Returns:
+        list[RowExtractionResult]: A list of RowExtractionResult objects containing the extracted data for each row.
+    """
+    table_direction = annotations.get_table_direction(
+        book_id=file_metadata.book_id,
+        opening=file_metadata.page_number,
+        page_side=page_side,  # type: ignore
+    )
+    table_headers = annotations.get_table_headers(
+        book_id=file_metadata.book_id,
+        opening=file_metadata.page_number,
+        page_side=page_side,  # type: ignore
+    )
 
-    results = []
+    df = table.get_text_df()
+    if df.empty:
+        return []
 
-    for xml_path in xml_files:
-        logger.info(f"Processing {xml_path.name}")
+    all_results: list[RowExtractionResult] = []
+    # Process the DataFrame in batches
+    for i in range(0, len(df), config.batch_size):
+        batch_df = df.iloc[i : i + config.batch_size]
+        original_indices = batch_df.index.tolist()
 
-        # Extract tables from XML
-        with open(xml_path, "r", encoding="utf-8") as xml_file:
-            tables = extract_datatables_from_xml(xml_file)
+        try:
+            extracted_batch = process_table_batch(
+                table_batch_df=batch_df,
+                table_direction=table_direction,
+                table_headers=table_headers,
+                file_metadata=file_metadata,
+                instructions=instructions,
+            )
 
-        # Process each table
-        for table in tables:
-            if xml_path not in annotations or table.id not in annotations[xml_path]:
+            # It's fine if the extracted count doesn't match the batch row count, there may be non-sensical rows mixed in
+
+            # Combine original row info with extracted data
+            for row_idx, extracted_data in zip(original_indices, extracted_batch):
+                all_results.append(
+                    RowExtractionResult(
+                        source_xml=f"{file_metadata.book_id}_{file_metadata.page_number:04d}.xml",
+                        table_id=table.id,
+                        row_idx=row_idx,
+                        extracted_data=extracted_data,
+                    )
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Error processing batch from {file_metadata.book_id}, table {table.id}: {e}",
+                exc_info=True,
+            )
+            continue
+
+    if config.save_debug_files:
+        save_debug_info(
+            table=df,
+            table_direction=table_direction,
+            table_headers=table_headers,
+            metadata=file_metadata,
+            extracted_items=all_results,
+            config=config,
+            table_id=table.id,
+        )
+
+    return all_results
+
+
+def process_book(
+    book_metadata: BookMetadata,
+    data_source: AnnotatedContextSource,
+    annotations: BookAnnotationReader,
+    config: AppConfig,
+) -> None:
+    """Processes a single book by extracting data from its XML files."""
+    parish_book = annotations.get_book(book_metadata.book_id)
+
+    # 1) construct the instructions based on the context files.
+    context_files = list(data_source.get_book_context_files(book_metadata))
+    table_sample_paths = sample(context_files, k=min(15, len(context_files)))
+    table_sample: list[Datatable] = []
+    for file in table_sample_paths:
+        with open(file, "r", encoding="utf-8") as f:
+            file_metatadata = extract_file_metadata(file.name)
+            if not file_metatadata:
                 logger.warning(
-                    f"No annotations found for table {table.id} in {xml_path.name}"
+                    f"Could not parse metadata from filename: {file.name}. Skipping."
                 )
                 continue
+            tables = extract_datatables_from_xml(f)
+            tables = remove_overlapping_tables(tables)
 
-            table_annotations = annotations[xml_path][table.id]
-            df = table.get_text_df()
+            if parish_book.is_printed():
+                print_type_str = parish_book.get_type_for_opening(
+                    file_metatadata.page_number
+                )
+                tables = merge_separated_tables(
+                    tables,
+                    annotations.get_print_type(print_type_str).table_count,
+                )
 
-            # Process each row
-            for row_idx, row in df.iterrows():
-                row_data = {
-                    "source_xml": str(xml_path),
-                    "table_id": table.id,
-                    "row_idx": row_idx,
-                    "extracted_data": {},
-                }
+            table_sample.extend(tables)
 
-                # Combine text from relevant columns for each item
-                for item in ITEMS:
-                    if item not in table_annotations:
-                        logger.warning(
-                            f"No column annotations for {item} in table {table.id}"
-                        )
-                        continue
+    for table in table_sample:
+        if not isinstance(table, Datatable):
+            logger.error(f"Invalid table type: {type(table)} in file {file.name}")
+            continue
 
-                    # Get text from all columns annotated for this item
-                    columns = table_annotations[item]
-                    if not columns:
-                        continue
-
-                    item_text = " | ".join(
-                        str(row[col]).strip() for col in columns if col < len(row)
-                    )
-                    if not item_text.strip():
-                        continue
-
-                    # Extract data using LLM
-                    extracted = process_table_row(item_text)
-                    row_data["extracted_data"].update(extracted)
-
-                results.append(row_data)
-
-                # Periodically save results
-                if len(results) % 100 == 0:
-                    save_results(output_file, results)
-
-    # Save final results
-    save_results(output_file, results)
-    logger.info(f"Processing complete. Results saved to {output_file}")
-
-
-def save_results(output_file: Path, results: list[dict]) -> None:
-    """Save results to a JSONL file."""
-    with open(output_file, "w", encoding="utf-8") as f:
-        for result in results:
-            f.write(json.dumps(result, ensure_ascii=False) + "\n")
-
-
-def main(args: argparse.Namespace) -> None:
-    input_dir = Path(args.input_dir)
-    if not input_dir.exists():
-        logger.error(f"Input directory {input_dir} does not exist")
-        return
-
-    output_file = input_dir / "extracted_data_naive.jsonl"
-
-    # Load environment variables
-    load_dotenv(Path(__file__).parent.parent / ".env")
-
-    # Initialize LLM
-    lm = dspy.LM(
-        "openai/gpt-4o-mini",
-        api_key=os.getenv("OPENAI_API_KEY"),
+    predict = dspy.Predict(BookInstructions)
+    result = predict(
+        book_metadata=book_metadata,
+        table_sample="",
+        table_headers=None,
+        item_types=TableExtraction.ITEMS_TO_EXTRACT,
+        year_range=book_metadata.year_range,
+        parish=book_metadata.parish,
     )
-    dspy.configure(lm=lm)
+    instructions: str = result.instructions
 
-    # Process tables
-    process_tables(input_dir, output_file)
+    # 2) process each of the xml files
+    book_files = data_source.get_book_files(book_metadata)
+    for xml_file in book_files:
+        logger.info(f"Processing XML file: {xml_file.name}")
+        file_metadata = extract_file_metadata(xml_file.name)
+        if not file_metadata:
+            logger.warning(
+                f"Could not parse metadata from filename: {xml_file.name}. Skipping."
+            )
+            continue
+
+        with open(xml_file, "r", encoding="utf-8") as f:
+            tables = extract_datatables_from_xml(f)
+
+        # these shouldn't be relevant when using the development-set, but are crucial for the actual run
+        tables = remove_overlapping_tables(tables)
+
+        if parish_book.is_printed():
+            tables = merge_separated_tables(
+                tables,
+                annotations.get_print_type(
+                    parish_book.get_type_for_opening(file_metatadata.page_number)  # type: ignore
+                ).table_count,
+            )
+
+        all_results: list[RowExtractionResult] = []
+        for table in tables:
+            page_side = "both" if len(tables) == 1 else table.get_page_side()
+            table_results = process_single_table(
+                table,
+                page_side,
+                file_metadata,
+                annotations,
+                instructions,
+                config,
+            )
+            all_results.extend(table_results)
+
+        save_results(config.output_file, all_results)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("dspy").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("openai").setLevel(logging.WARNING)
+def run_extraction_pipeline(config: AppConfig) -> None:
+    """Main pipeline to find, process, and save data from XML files."""
+    # Unzips the autod zip files... this takes a while
+    with AnnotatedContextSource(config.input_dir, config.autod_zips_dir) as file_source:
+        xml_files = sorted(file_source.get_files())
+        if config.file_limit:
+            xml_files = xml_files[: config.file_limit]
 
-    parser = argparse.ArgumentParser()
+        logger.info(f"Found {len(xml_files)} XML files to process.")
+
+        annotations = BookAnnotationReader(config.book_annotations_path)
+        all_results = []
+
+        for book_metadata in file_source.get_books():
+            file_source.get_book_files(book_metadata)
+            logger.info(f"Processing book: {book_metadata.book_id}")
+            process_book(
+                book_metadata=book_metadata,
+                data_source=file_source,
+                annotations=annotations,
+                config=config,
+            )
+
+        logger.info(f"Processing complete. Final results saved to {config.output_file}")
+
+
+# --- Utility Functions ---
+
+
+def save_results(output_file: Path, results: list[RowExtractionResult]) -> None:
+    """Saves a list of RowExtractionResult to a JSONL file."""
+    logger.info(f"Saving {len(results)} results to {output_file}...")
+    try:
+        with open(output_file, "w", encoding="utf-8") as f:
+            for result in results:
+                f.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
+    except IOError as e:
+        logger.error(f"Failed to write results to {output_file}: {e}")
+
+
+def save_debug_info(
+    table: pd.DataFrame,
+    table_direction: str,
+    table_headers: list[str] | None,
+    metadata: FileMetadata,
+    extracted_items: list[RowExtractionResult],
+    config: AppConfig,
+    table_id: str,
+) -> None:
+    """Saves detailed information for a single processed table for debugging."""
+    config.debug_dir.mkdir(exist_ok=True)
+    debug_file = (
+        config.debug_dir / f"{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
+    )
+    logger.info(f"Saving debug info to {debug_file}")
+
+    try:
+        with open(debug_file, "w", encoding="utf-8") as f:
+            f.write(f"Source XML: {metadata.book_id}_{metadata.page_number:04d}.xml\n")
+            f.write(f"Table ID: {table_id}\n")
+            f.write(f"Table Direction: {table_direction}\n")
+            f.write(f"Table Headers: {table_headers}\n")
+            f.write(f"Year Range: {metadata.year_range}\n")
+            f.write(f"Parish: {metadata.parish}\n\n")
+            f.write("--- Extracted Items ---\n")
+            for item in extracted_items:
+                f.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+            f.write("\n--- Original Table Data ---\n")
+            f.write(table.to_markdown(index=False))
+    except IOError as e:
+        logger.error(f"Failed to write debug file {debug_file}: {e}")
+
+
+def setup_dspy_lm(config: AppConfig) -> None:
+    """Initializes and configures the dspy language model."""
+    api_key = (
+        os.getenv("GEMINI_API_KEY")
+        if "gemini" in config.llm_model
+        else os.getenv("OPENAI_API_KEY")
+    )
+    if not api_key:
+        raise ValueError("API key not found in environment variables.")
+
+    # TODO currently only Gemini models are supported
+    lm = dspy.LM(
+        model=config.llm_model,
+        api_key=api_key,
+        api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        max_tokens=config.max_tokens,
+    )
+
+    dspy.settings.configure(track_usage=True, lm=lm)
+    logger.info(f"DSPy configured with model: {config.llm_model}")
+
+
+# --- Main Execution ---
+
+
+def main() -> None:
+    """Parses arguments, sets up configuration, and starts the pipeline."""
+    parser = argparse.ArgumentParser(
+        description="Extract structured data from historical church migration documents using an LLM."
+    )
     parser.add_argument(
         "--input-dir",
         type=str,
         required=True,
-        help="Path to the input directory containing XML files and annotations",
+        help="Path to the input directory containing XML files.",
+    )
+    parser.add_argument(
+        "--book-annotations",
+        type=str,
+        required=True,
+        help="Path to the book annotations Excel file.",
+    )
+    parser.add_argument(
+        "--autod-zips-dir",
+        type=str,
+        required=True,
+        help="Path to the directory containing autod zip files.",
+    )
+    parser.add_argument(
+        "--output-filename",
+        type=str,
+        default="extracted_data.jsonl",
+        help="Name for the output JSONL file.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of table rows to process in a single LLM call.",
+    )
+    parser.add_argument(
+        "--file-limit",
+        type=int,
+        default=None,
+        help="Limit the number of XML files to process (for debugging).",
+    )
+    parser.add_argument(
+        "--no-debug-files",
+        action="store_false",
+        dest="save_debug_files",
+        help="Disable saving of detailed debug files for each table.",
     )
 
     args = parser.parse_args()
-    main(args)
 
-    # Usage
-    # python -m extraction.extract_naive --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-output"
+    input_dir = Path(args.input_dir)
+    book_annotations_path = Path(args.book_annotations)
+    autod_zips_dir = Path(args.autod_zips_dir)
+
+    if not input_dir.is_dir():
+        logger.error(f"Input directory not found: {input_dir}")
+        return
+    if not book_annotations_path.is_file():
+        logger.error(f"Book annotations file not found: {book_annotations_path}")
+        return
+    if not autod_zips_dir.is_dir():
+        logger.error(f"Autod zips directory not found: {autod_zips_dir}")
+        return
+
+    # Load environment variables from .env file in the project root
+    load_dotenv(Path(__file__).parent.parent / ".env")
+
+    config = AppConfig(
+        input_dir=input_dir,
+        book_annotations_path=book_annotations_path,
+        autod_zips_dir=autod_zips_dir,
+        output_file=input_dir / args.output_filename,
+        batch_size=args.batch_size,
+        file_limit=args.file_limit,
+        save_debug_files=args.save_debug_files,
+    )
+
+    try:
+        setup_dspy_lm(config)
+        run_extraction_pipeline(config)
+    except Exception as e:
+        logger.critical(f"A critical error occurred: {e}", exc_info=True)
+
+
+if __name__ == "__main__":
+    main()
+
+    # Usage:
+    # python -m extraction.main --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval" --book-annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --file-limit 2 --output-filename "test_run_output.jsonl"
