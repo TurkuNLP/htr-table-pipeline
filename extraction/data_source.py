@@ -1,10 +1,8 @@
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Iterable, Protocol
 
-
-from extraction.extract_agent import ExtractAgentConfig
 from extraction.utils import BookMetadata, extract_file_metadata
 from utilities.temp_unzip import TempExtractedData
 
