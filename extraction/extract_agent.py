@@ -130,7 +130,7 @@ def process_table_batch(
     table_headers: list[str] | None,
     file_metadata: FileMetadata,
     instructions: str,
-) -> list[dict[str, str | None]]:
+) -> tuple[list[dict[str, str | None]], dict | None]:
     """Processes a single batch of table rows using the dspy signature."""
     table_render = table_batch_df.to_markdown(index=False)
     if not isinstance(table_render, str):
@@ -151,9 +151,9 @@ def process_table_batch(
 
     if not result.extracted_items:
         logger.error("No items were extracted by the dspy call.")
-        return []
+        return ([], {})
 
-    return result.extracted_items
+    return (result.extracted_items, result.get_lm_usage())
 
 
 @dataclass(frozen=True)
@@ -214,19 +214,23 @@ def process_single_table(
         return []
 
     all_results: list[RowExtractionResult] = []
+    input_tokens = 0
+    output_tokens = 0
     # Process the DataFrame in batches
     for i in range(0, len(df), config.batch_size):
         batch_df = df.iloc[i : i + config.batch_size]
         original_indices = batch_df.index.tolist()
 
         try:
-            extracted_batch = process_table_batch(
+            extracted_batch, usage_data = process_table_batch(
                 table_batch_df=batch_df,
                 table_direction=table_direction,
                 table_headers=table_headers,
                 file_metadata=file_metadata,
                 instructions=instructions,
             )
+            input_tokens += usage_data.get("prompt_tokens", 0) if usage_data else 0
+            output_tokens += usage_data.get("completion_tokens", 0) if usage_data else 0
 
             # It's fine if the extracted count doesn't match the batch row count, there may be non-sensical rows mixed in
 
@@ -258,6 +262,8 @@ def process_single_table(
             config=config,
             book_instructions=instructions,
             table_id=table.id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     return all_results
@@ -359,6 +365,9 @@ def process_book(
 
         save_results(config.output_file, all_results)
 
+        if tqdm:
+            tqdm.update(1)
+
 
 def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
@@ -426,6 +435,8 @@ def save_debug_info(
     config: ExtractAgentConfig,
     book_instructions: str,
     table_id: str,
+    input_tokens: int,
+    output_tokens: int,
 ) -> None:
     """Saves detailed information for a single processed table for debugging."""
     config.debug_dir.mkdir(exist_ok=True)
@@ -441,7 +452,9 @@ def save_debug_info(
             f.write(f"Table Direction: {table_direction}\n")
             f.write(f"Table Headers: {table_headers}\n")
             f.write(f"Year Range: {metadata.year_range}\n")
-            f.write(f"Parish: {metadata.parish}\n\n")
+            f.write(f"Parish: {metadata.parish}\n")
+            f.write(f"Input tokens: {input_tokens}\n")
+            f.write(f"Output tokens: {output_tokens}\n\n")
             f.write("--- Book instructions ---\n")
             f.write(book_instructions)
             f.write("--- Extracted Items ---\n")
