@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
     logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
-file_limit: int | None = None
-
 
 class TableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
@@ -229,8 +227,18 @@ def process_single_table(
                 file_metadata=file_metadata,
                 instructions=instructions,
             )
-            input_tokens += usage_data.get("prompt_tokens", 0) if usage_data else 0
-            output_tokens += usage_data.get("completion_tokens", 0) if usage_data else 0
+            if usage_data:
+                for model_key in usage_data:
+                    input_tokens += (
+                        usage_data[model_key].get("prompt_tokens", 0)
+                        if usage_data
+                        else 0
+                    )
+                    output_tokens += (
+                        usage_data[model_key].get("completion_tokens", 0)
+                        if usage_data
+                        else 0
+                    )
 
             # It's fine if the extracted count doesn't match the batch row count, there may be non-sensical rows mixed in
 
@@ -294,7 +302,10 @@ def process_book(
             tables = extract_datatables_from_xml(f)
             tables = remove_overlapping_tables(tables)
 
-            if parish_book.is_printed():
+            if (
+                "print"
+                in parish_book.get_type_for_opening(file_metatadata.page_number).lower()
+            ):
                 print_type_str = parish_book.get_type_for_opening(
                     file_metatadata.page_number
                 )
@@ -324,7 +335,7 @@ def process_book(
     # 2) process each of the xml files
     book_files = data_source.get_book_files(book_metadata)
     for xml_file in book_files:
-        if config.file_limit:
+        if config.file_limit is not None:
             config.file_limit -= 1
             if config.file_limit < 0:
                 break
@@ -371,13 +382,13 @@ def process_book(
 
 def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
-    # Unzips the autod zip files... this takes a while
+    # Unzips the autod zip files... may take a while
     with AnnotatedContextSource(
         input_dir=config.input_dir,
         zips_dir=config.autod_zips_dir,
         extract_dir=config.extract_dir,
     ) as file_source:
-        if config.file_limit:
+        if config.file_limit is not None:
             logger.info(
                 f"Limiting processing to {config.file_limit} XML files for debugging."
             )
@@ -390,12 +401,12 @@ def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
                 for book_metadata in file_source.get_books()
             ]
         )
-        if config.file_limit:
+        if config.file_limit is not None:
             xml_count = min(xml_count, config.file_limit)
 
         with tqdm(total=xml_count) as progress:
             for book_metadata in file_source.get_books():
-                if config.file_limit:
+                if config.file_limit is not None:
                     if config.file_limit < 0:
                         # This is changed in process_book, but we also want to break this loop
                         break
