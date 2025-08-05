@@ -4,17 +4,17 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from random import sample
-from typing import Any, ClassVar
+from typing import Any
 
 import dspy
-import dspy.predict
 import pandas as pd
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 from extraction.data_source import AnnotatedContextSource
+from extraction.items_to_extract import ITEMS_TO_EXTRACT
 from extraction.utils import BookMetadata, FileMetadata, extract_file_metadata
+from extraction.instructions import generate_book_instructions
 from postprocess.metadata import BookAnnotationReader
 from postprocess.table_types import Datatable
 from postprocess.tables_fix import merge_separated_tables, remove_overlapping_tables
@@ -31,19 +31,8 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
     logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
 
-class TableExtraction(dspy.Signature):
+class AgentTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
-
-    ITEMS_TO_EXTRACT: ClassVar[list[str]] = [
-        "person_name",
-        "occupation",
-        "men_count",
-        "women_count",
-        "parish_from",
-        "parish_to",
-        "date_original",
-        "date_yyyy-mm-dd",
-    ]
 
     book_instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
     table: str = dspy.InputField(desc="The table text containing multiple rows")
@@ -53,7 +42,9 @@ class TableExtraction(dspy.Signature):
     table_headers: list[str] | None = dspy.InputField(
         desc="The headers of the table, if available."
     )
-    item_types: list[str] = dspy.InputField(desc="The items to extract from each row.")
+    item_types: dict[str, str] = dspy.InputField(
+        desc="The items to extract from each row with possible details."
+    )
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
     parish: str = dspy.InputField(desc="The parish the book is from.")
 
@@ -64,39 +55,6 @@ class TableExtraction(dspy.Signature):
             "the number of rows in the input table."
         )
     )
-
-
-class BookInstructions(dspy.Signature):
-    """
-    Write instructions for an LLM on how to extract data from this specific book.
-
-    You shouldn't write the whole prompt, but rather the part that is specific to this book.
-    Your instructions will be appended to the general instructions for the extraction task.
-    """
-
-    ITEMS_TO_EXTRACT: ClassVar[list[str]] = [
-        "person_name",
-        "occupation",
-        "men_count",
-        "women_count",
-        "parish_from",
-        "parish_to",
-        "date_original",
-        "date_yyyy-mm-dd",
-    ]
-
-    book_metadata: BookMetadata = dspy.InputField(
-        desc="Metadata of the book to process."
-    )
-    table_sample: str = dspy.InputField()
-    table_headers: list[str] | None = dspy.InputField(
-        desc="The headers of the table, if available."
-    )
-    item_types: list[str] = dspy.InputField(desc="The items to extract from each row.")
-    year_range: str = dspy.InputField(desc="The year range the source book covers.")
-    parish: str = dspy.InputField(desc="The parish the book is from.")
-
-    book_instructions: str = dspy.OutputField(desc="Generated extraction instructions.")
 
 
 # --- Data Structures ---
@@ -110,13 +68,13 @@ class ExtractAgentConfig:
     book_annotations_path: Path
     autod_zips_dir: Path
     output_file: Path
-    debug_dir: Path = Path("debug")
+    debug_dir: Path = Path("debug_output")
     save_debug_files: bool = True
     extract_dir: Path | None = None
     batch_size: int = 10
     file_limit: int | None = None
     llm_model: str = "openai/gemini-2.0-flash"
-    max_tokens: int = 8192
+    max_tokens: int = 14_000
 
 
 # --- Core Logic ---
@@ -134,14 +92,14 @@ def process_table_batch(
     if not isinstance(table_render, str):
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
-    extractor = dspy.Predict(TableExtraction)
+    extractor = dspy.Predict(AgentTableExtraction)
     result = extractor(
         table=table_render,
         table_direction=table_direction,
         table_headers=table_headers,
         year_range=file_metadata.year_range,
         parish=file_metadata.parish,
-        item_types=TableExtraction.ITEMS_TO_EXTRACT,
+        item_types=ITEMS_TO_EXTRACT,
         book_instructions=instructions,
     )
 
@@ -288,49 +246,19 @@ def process_book(
     parish_book = annotations.get_book(book_metadata.book_id)
 
     # 1) construct the instructions based on the context files.
-    context_files = list(data_source.get_book_context_files(book_metadata))
-    table_sample_paths = sample(context_files, k=min(15, len(context_files)))
-    table_sample: list[Datatable] = []
-    for file in table_sample_paths:
-        with open(file, "r", encoding="utf-8") as f:
-            file_metatadata = extract_file_metadata(file.name)
-            if not file_metatadata:
-                logger.warning(
-                    f"Could not parse metadata from filename: {file.name}. Skipping."
-                )
-                continue
-            tables = extract_datatables_from_xml(f)
-            tables = remove_overlapping_tables(tables)
-
-            if (
-                "print"
-                in parish_book.get_type_for_opening(file_metatadata.page_number).lower()
-            ):
-                print_type_str = parish_book.get_type_for_opening(
-                    file_metatadata.page_number
-                )
-                tables = merge_separated_tables(
-                    tables,
-                    annotations.get_print_type(print_type_str).table_count,
-                )
-
-            table_sample.extend(tables)
-
-    for table in table_sample:
-        if not isinstance(table, Datatable):
-            logger.error(f"Invalid table type: {type(table)} in file {file.name}")
-            continue
-
-    predict = dspy.Predict(BookInstructions)
-    result = predict(
-        book_metadata=book_metadata,
-        table_sample="",
-        table_headers=None,
-        item_types=TableExtraction.ITEMS_TO_EXTRACT,
-        year_range=book_metadata.year_range,
-        parish=book_metadata.parish,
-    )
-    instructions: str = result.book_instructions
+    try:
+        instructions = generate_book_instructions(
+            book_metadata,
+            data_source.get_book_context_files(book_metadata),
+            annotations,
+            parish_book,
+        )
+    except Exception as e:
+        logger.error(
+            f"Error generating instructions for book '{book_metadata.book_id}'\n\t{e}",
+            exc_info=True,
+        )
+        return
 
     # 2) process each of the xml files
     book_files = data_source.get_book_files(book_metadata)
@@ -357,7 +285,7 @@ def process_book(
             tables = merge_separated_tables(
                 tables,
                 annotations.get_print_type(
-                    parish_book.get_type_for_opening(file_metatadata.page_number)  # type: ignore
+                    parish_book.get_type_for_opening(file_metadata.page_number)  # type: ignore
                 ).table_count,
             )
 
@@ -452,7 +380,8 @@ def save_debug_info(
     """Saves detailed information for a single processed table for debugging."""
     config.debug_dir.mkdir(exist_ok=True)
     debug_file = (
-        config.debug_dir / f"{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
+        config.debug_dir
+        / f"extract_agent/{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
     )
     logger.info(f"Saving debug info to {debug_file}")
 
@@ -468,7 +397,7 @@ def save_debug_info(
             f.write(f"Output tokens: {output_tokens}\n\n")
             f.write("--- Book instructions ---\n")
             f.write(book_instructions)
-            f.write("--- Extracted Items ---\n")
+            f.write("\n--- Extracted Items ---\n")
             for item in extracted_items:
                 f.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
             f.write("\n--- Original Table Data ---\n")

@@ -4,13 +4,14 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import dspy
 import pandas as pd
 from dotenv import load_dotenv
 
 from extraction.data_source import SimpleDirSource
+from extraction.items_to_extract import ITEMS_TO_EXTRACT
 from extraction.utils import FileMetadata, extract_file_metadata
 from postprocess.metadata import BookAnnotationReader
 from postprocess.table_types import Datatable
@@ -28,19 +29,8 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
     logging.getLogger(lib_logger).setLevel(logging.WARNING)
 
 
-class TableExtraction(dspy.Signature):
+class NaiveTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
-
-    ITEMS_TO_EXTRACT: ClassVar[list[str]] = [
-        "person_name",
-        "occupation",
-        "men_count",
-        "women_count",
-        "parish_from",
-        "parish_to",
-        "date_original",
-        "date_yyyy-mm-dd",
-    ]
 
     table: str = dspy.InputField(desc="The table text containing multiple rows")
     table_direction: str = dspy.InputField(
@@ -49,7 +39,9 @@ class TableExtraction(dspy.Signature):
     table_headers: list[str] | None = dspy.InputField(
         desc="The headers of the table, if available."
     )
-    item_types: list[str] = dspy.InputField(desc="The items to extract from each row.")
+    item_types: dict[str, str] = dspy.InputField(
+        desc="The items to extract from each row with possible details."
+    )
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
     parish: str = dspy.InputField(desc="The parish the book is from.")
 
@@ -72,12 +64,12 @@ class AppConfig:
     input_dir: Path
     book_annotations_path: Path
     output_file: Path
-    debug_dir: Path = Path("debug")
+    debug_dir: Path = Path("debug_output")
     save_debug_files: bool = True
     batch_size: int = 10
     file_limit: int | None = None
     llm_model: str = "openai/gemini-2.0-flash"
-    max_tokens: int = 8192
+    max_tokens: int = 14_000
 
 
 # --- Core Logic ---
@@ -94,14 +86,14 @@ def process_table_batch(
     if not isinstance(table_render, str):
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
-    extractor = dspy.Predict(TableExtraction)
+    extractor = dspy.Predict(NaiveTableExtraction)
     result = extractor(
         table=table_render,
         table_direction=table_direction,
         table_headers=table_headers,
         year_range=metadata.year_range,
         parish=metadata.parish,
-        item_types=TableExtraction.ITEMS_TO_EXTRACT,
+        item_types=ITEMS_TO_EXTRACT,
     )
 
     logger.info(f"LLM usage for batch: {result.get_lm_usage()}")
@@ -255,7 +247,8 @@ def save_debug_info(
     """Saves detailed information for a single processed table for debugging."""
     config.debug_dir.mkdir(exist_ok=True)
     debug_file = (
-        config.debug_dir / f"{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
+        config.debug_dir
+        / f"extract_agent/{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
     )
     logger.info(f"Saving debug info to {debug_file}")
 
@@ -266,8 +259,8 @@ def save_debug_info(
             f.write(f"Table Direction: {table_direction}\n")
             f.write(f"Table Headers: {table_headers}\n")
             f.write(f"Year Range: {metadata.year_range}\n")
-            f.write(f"Parish: {metadata.parish}\n\n")
-            f.write("--- Extracted Items ---\n")
+            f.write(f"Parish: {metadata.parish}\n")
+            f.write("\n--- Extracted Items ---\n")
             for item in extracted_items:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
             f.write("\n--- Original Table Data ---\n")

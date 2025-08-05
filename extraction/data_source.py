@@ -83,7 +83,6 @@ class AnnotatedContextSource(DataSource):
             return self._temp_extracted_data.__exit__(exc_type, exc_val, exc_tb)
 
     def get_books(self) -> Iterable[BookMetadata]:
-        """Retrieve all book IDs."""
         books: set[BookMetadata] = set()
         for file in self.get_files():
             metadata = extract_file_metadata(file.name, file_type=".xml")
