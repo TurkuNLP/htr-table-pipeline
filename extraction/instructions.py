@@ -24,11 +24,13 @@ class BookInstructions(dspy.Signature):
     from a historical migration table. The LLM will only have one table to process at a time, so the
     book-level instructions will be crucial.
 
-    The book is likely written in Finnish or Swedish.
-
     Avoid framing general task methodology. Focus on delivering instructions for handling
     the specific structure, challenges, and nuances of the given book. Pay attention to details like
     abbreviations, how specific items can be extracted, and repeating structural issues in the table.
+
+    The book is likely written in Finnish or Swedish.
+
+    Only include the instructions in your response, nothing else.
     """
 
     # book_metadata: BookMetadata = dspy.InputField(
@@ -60,15 +62,19 @@ def generate_book_instructions(
     table_sample_paths = sample(context_files, k=min(15, len(context_files)))
     table_sample: list[Datatable] = []
     headers: list[str] | None = None
-    for file in table_sample_paths:
-        with open(file, "r", encoding="utf-8") as f:
-            file_metadata: FileMetadata | None = extract_file_metadata(file.name)
+    for file_path in table_sample_paths:
+        with open(file_path, "r", encoding="utf-8") as f:
+            file_metadata: FileMetadata | None = extract_file_metadata(file_path.name)
             if not file_metadata:
                 logger.warning(
-                    f"Could not parse metadata from filename: {file.name}. Skipping."
+                    f"Could not parse metadata from filename: {file_path.name}. Skipping."
                 )
                 continue
+
             tables = extract_datatables_from_xml(f)
+            if len(tables) == 0:
+                continue
+            original_count = len(tables)
             tables = remove_overlapping_tables(tables)
             if (
                 "print"
@@ -85,12 +91,15 @@ def generate_book_instructions(
                     file_metadata.book_id, file_metadata.page_number
                 )
 
+            logger.debug(
+                f"Sampling tables from '{file_path}'. \n\tstart table count: {original_count}\n\tfixed table count {len(tables)}"
+            )
+
             idx = randint(0, len(tables) - 1)
             table = tables[idx]
             table.headers = headers[idx] if headers else None  # type: ignore
             table.page = file_metadata.page_number  # type: ignore
             table_sample.append(table)
-    annotations.get_table_direction
 
     predict = dspy.Predict(BookInstructions)
     table_sample_str = "\n\n".join(
@@ -141,10 +150,20 @@ def generate_book_instructions(
             f.write("\n--- Instructions ---\n")
             f.write(f"\n{instructions}")
 
+    logger.info(
+        f"Generated book instructions for '{book_metadata.get_book_dir_name()}'"
+    )
+
     return instructions
 
 
 def main():
+    logging.basicConfig(
+        level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
+        logging.getLogger(lib_logger).setLevel(logging.WARNING)
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -217,3 +236,4 @@ if __name__ == "__main__":
     # python -m extraction.instructions --book-dir "PATH/TO/BOOK"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"
 
     # python -m extraction.instructions --book-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test_async\autods_elimaki_fold_4\images\elimaki\muuttaneet_1875-1887_mko1-4"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"
+    # python -m extraction.instructions --book-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test_async\autods_maaninka_fold_3\images\maaninka\muuttaneet_1852-1864_ap_ulos"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"

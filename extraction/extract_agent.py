@@ -27,9 +27,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
-    logging.getLogger(lib_logger).setLevel(logging.WARNING)
-
 
 class AgentTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
@@ -378,7 +375,7 @@ def save_debug_info(
     output_tokens: int,
 ) -> None:
     """Saves detailed information for a single processed table for debugging."""
-    config.debug_dir.mkdir(exist_ok=True)
+    config.debug_dir.mkdir(exist_ok=True, parents=True)
     debug_file = (
         config.debug_dir
         / f"extract_agent/{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
@@ -432,6 +429,10 @@ def setup_dspy_lm(config: ExtractAgentConfig) -> None:
 
 
 def main() -> None:
+    
+for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
+    logging.getLogger(lib_logger).setLevel(logging.WARNING)
+
     """Parses arguments, sets up configuration, and starts the pipeline."""
     parser = argparse.ArgumentParser(
         description="Extract structured data from historical church migration documents using an LLM."
