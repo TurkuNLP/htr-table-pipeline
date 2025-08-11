@@ -336,30 +336,46 @@ async def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
             xml_count = min(xml_count, config.file_limit)
 
         with tqdm(total=xml_count) as progress:
-            # Create tasks for concurrent processing of books
-            tasks = []
-            for book_metadata in file_source.get_books():
-                if config.file_limit is not None:
-                    if config.file_limit < 0:
-                        # This is changed in process_book, but we also want to break this loop
-                        break
-                file_source.get_book_files(book_metadata)
-                logger.debug(f"Creating task for book: {book_metadata.book_id}")
+            if config.file_limit is None:
+                # Create tasks for concurrent processing of books
+                logger.info("Processing books concurrently - high qps")
+                tasks = []
+                for book_metadata in file_source.get_books():
+                    assert config.file_limit is None
+                    file_source.get_book_files(book_metadata)
+                    logger.debug(f"Creating task for book: {book_metadata.book_id}")
 
-                task = asyncio.create_task(
-                    process_book(
+                    task = asyncio.create_task(
+                        process_book(
+                            book_metadata=book_metadata,
+                            data_source=file_source,
+                            annotations=annotations,
+                            config=config,
+                            tqdm=progress,
+                        )
+                    )
+                    tasks.append(task)
+
+                # Wait for all book processing tasks to complete
+                await asyncio.gather(*tasks)
+            else:
+                logger.info("Processing books sequentially to respect file limits")
+                # Sequential processing to ensure file_limit is respected
+                for book_metadata in file_source.get_books():
+                    if config.file_limit is not None:
+                        if config.file_limit < 0:
+                            # This is changed in process_book, but we also want to break this loop
+                            break
+                    file_source.get_book_files(book_metadata)
+                    logger.info(f"Processing book: {book_metadata.book_id}")
+
+                    await process_book(
                         book_metadata=book_metadata,
                         data_source=file_source,
                         annotations=annotations,
                         config=config,
                         tqdm=progress,
                     )
-                )
-                tasks.append(task)
-
-            # Wait for all book processing tasks to complete
-            await asyncio.gather(*tasks)
-
         logger.info("Processing complete.")
 
 

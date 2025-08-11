@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -75,7 +76,7 @@ class AppConfig:
 # --- Core Logic ---
 
 
-def process_table_batch(
+async def process_table_batch(
     table_batch_df: pd.DataFrame,
     table_direction: str,
     table_headers: list[str] | None,
@@ -87,7 +88,7 @@ def process_table_batch(
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
     extractor = dspy.Predict(NaiveTableExtraction)
-    result = extractor(
+    result = await extractor.acall(
         table=table_render,
         table_direction=table_direction,
         table_headers=table_headers,
@@ -105,7 +106,7 @@ def process_table_batch(
     return result.extracted_items
 
 
-def process_single_table(
+async def process_single_table(
     table: Datatable,
     page_side: str,
     metadata: FileMetadata,
@@ -138,7 +139,7 @@ def process_single_table(
         original_indices = batch_df.index.tolist()
 
         try:
-            extracted_batch = process_table_batch(
+            extracted_batch = await process_table_batch(
                 table_batch_df=batch_df,
                 table_direction=table_direction,
                 table_headers=table_headers,
@@ -179,7 +180,7 @@ def process_single_table(
     return all_results
 
 
-def run_extraction_pipeline(config: AppConfig) -> None:
+async def run_extraction_pipeline(config: AppConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
     xml_files = sorted(SimpleDirSource(config.input_dir).get_files())
     if config.file_limit:
@@ -188,7 +189,7 @@ def run_extraction_pipeline(config: AppConfig) -> None:
     logger.info(f"Found {len(xml_files)} XML files to process.")
 
     annotations = BookAnnotationReader(config.book_annotations_path)
-    all_results = []
+    all_results: list[dict] = []
 
     for xml_path in xml_files:
         logger.info(f"Processing {xml_path.name}")
@@ -208,12 +209,29 @@ def run_extraction_pipeline(config: AppConfig) -> None:
             tables, annotations.get_print_type(metadata.book_id).table_count
         )
 
+        # Process all tables from this file concurrently
+        table_tasks = []
         for table in tables:
             page_side = "both" if len(tables) == 1 else table.get_page_side()
-            table_results = process_single_table(
-                table, page_side, metadata, annotations, config
+            task = asyncio.create_task(
+                process_single_table(table, page_side, metadata, annotations, config)
             )
-            all_results.extend(table_results)
+            table_tasks.append(task)
+
+        # Wait for all tables in this file to be processed
+        if table_tasks:
+            table_results_list = await asyncio.gather(
+                *table_tasks, return_exceptions=True
+            )
+
+            # Handle results and exceptions
+            for i, result in enumerate(table_results_list):
+                if isinstance(result, BaseException):
+                    logger.error(
+                        f"Error processing table {i} from {xml_path.name}: {result}"
+                    )
+                else:
+                    all_results.extend(result)
 
         # Periodically save results after each file
         save_results(config.output_file, all_results)
@@ -346,9 +364,7 @@ def main() -> None:
         return
     if not book_annotations_path.is_file():
         logger.error(f"Book annotations file not found: {book_annotations_path}")
-        return
-
-    # Load environment variables from .env file in the project root
+        return  # Load environment variables from .env file in the project root
     load_dotenv(Path(__file__).parent.parent / ".env")
 
     config = AppConfig(
@@ -362,7 +378,7 @@ def main() -> None:
 
     try:
         setup_dspy_lm(config)
-        run_extraction_pipeline(config)
+        asyncio.run(run_extraction_pipeline(config))
     except Exception as e:
         logger.critical(f"A critical error occurred: {e}", exc_info=True)
 
