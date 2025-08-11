@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
         for i, table in enumerate(tables):
             output_path = output_dir / f"{xml_path.stem}_{table.id}.md"
-            table.get_text_df().to_markdown(output_path, index=False)
+            table.data.to_markdown(output_path, index=False)
             print(f"Table {i} saved to {output_path}")
 
-    # Usage: python -m postprocess.display_xml_table.py --file "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir\output\autods_alaharma_fold_5\images\alaharma\muuttaneet_1806-1844_66628\autods_alaharma_muuttaneet_1806-1844_66628_13.jpg"
+    # Usage: python -m postprocess.display_xml_table --file "C:\Users\leope\Documents\dev\turku-nlp\test_zip_dir\output\autods_alaharma_fold_5\images\alaharma\muuttaneet_1806-1844_66628\autods_alaharma_muuttaneet_1806-1844_66628_13.jpg"

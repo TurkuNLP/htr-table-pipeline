@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -36,14 +37,11 @@ class BookInstructions(dspy.Signature):
     # book_metadata: BookMetadata = dspy.InputField(
     #     desc="Metadata of the book to process."
     # )
-    table_sample: str = dspy.InputField(
-        desc="A sample of tables from the book with their page and page side added. The book may switch formats midway through or handle left and right sides differently."
-    )
-    # headers_hint: list[str] | None = dspy.InputField(
-    #     desc="Alleged header structure of the book, if available."
-    # )
     item_types: dict[str, str] = dspy.InputField(
         desc="Items to extract from each row with possible descriptions. Many items may not be present in the book at all."
+    )
+    table_sample: str = dspy.InputField(
+        desc="A sample of tables from the book with their page and page side added. The book may switch formats midway through or handle left and right sides differently."
     )
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
     parish: str = dspy.InputField(desc="The parish the book is from.")
@@ -51,15 +49,18 @@ class BookInstructions(dspy.Signature):
     book_instructions: str = dspy.OutputField(desc="Generated extraction instructions.")
 
 
-def generate_book_instructions(
+async def generate_book_instructions(
     book_metadata: BookMetadata,
     xml_files: Iterable[Path],
     annotations: BookAnnotationReader,
     parish_book: ParishBook,
     debug_output: bool = False,
+    instructions_table_sample_size=15,
 ):
     context_files = list(xml_files)
-    table_sample_paths = sample(context_files, k=min(15, len(context_files)))
+    table_sample_paths = sample(
+        context_files, k=min(instructions_table_sample_size, len(context_files))
+    )
     table_sample: list[Datatable] = []
     headers: list[str] | None = None
     for file_path in table_sample_paths:
@@ -114,10 +115,9 @@ def generate_book_instructions(
             ]
         )
     )
-    result = predict(
+    result = await predict.acall(
         # book_metadata=book_metadata,
         table_sample=table_sample_str,
-        # headers_hint=headers,
         item_types=ITEMS_TO_EXTRACT,
         year_range=book_metadata.year_range,
         parish=book_metadata.parish,
@@ -127,7 +127,7 @@ def generate_book_instructions(
     if debug_output:
         debug_path = Path("debug_output/book_instructions")
         debug_path.mkdir(exist_ok=True, parents=True)
-        debug_file_path = debug_path / f"{book_metadata.get_book_dir_name()}.txt"
+        debug_file_path = debug_path / f"{book_metadata.book_id}.txt"
 
         original_stem = debug_file_path.stem
         i = 1
@@ -220,12 +220,15 @@ def main():
 
     parish_book: ParishBook = annotations.get_book(book_metadata.book_id)
 
-    generate_book_instructions(
-        book_metadata=book_metadata,
-        annotations=annotations,
-        parish_book=parish_book,
-        xml_files=xml_files_path.glob("*.xml"),
-        debug_output=True,
+    asyncio.run(
+        generate_book_instructions(
+            book_metadata=book_metadata,
+            annotations=annotations,
+            parish_book=parish_book,
+            xml_files=xml_files_path.glob("*.xml"),
+            debug_output=True,
+            instructions_table_sample_size=4,
+        )
     )
 
 
@@ -237,3 +240,4 @@ if __name__ == "__main__":
 
     # python -m extraction.instructions --book-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test_async\autods_elimaki_fold_4\images\elimaki\muuttaneet_1875-1887_mko1-4"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"
     # python -m extraction.instructions --book-dir "C:\Users\leope\Documents\dev\turku-nlp\output_test_async\autods_maaninka_fold_3\images\maaninka\muuttaneet_1852-1864_ap_ulos"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"
+    # python -m extraction.instructions --book-dir "C:\Users\leope\Documents\dev\turku-nlp\parish-zips\autods_kitee_fold_6\images\kitee\muuttaneet_1903-1906_mko847"  --book-annotations-path "annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx"

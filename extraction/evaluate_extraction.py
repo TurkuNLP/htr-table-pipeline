@@ -38,12 +38,17 @@ def get_ground_truth_value(
     xml_name = xml_path.name
 
     if xml_name not in annotations:
+        logger.warning(f"xml_name '{xml_name}' not found in annotations")
         return ""
 
     if table_id not in annotations[xml_name]:
+        logger.warning(f"table_id '{table_id}' not found in annotations['{xml_name}']")
         return ""
 
     if item_name not in annotations[xml_name][table_id]:
+        logger.warning(
+            f"item_nmae '{item_name}' not found in annotations['{xml_name}']['{table_id}']"
+        )
         return ""
 
     # Get the column indices for this item

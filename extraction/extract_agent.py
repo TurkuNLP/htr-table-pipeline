@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -27,10 +28,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
+    logging.getLogger(lib_logger).setLevel(logging.WARNING)
+
 
 class AgentTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
 
+    parish: str = dspy.InputField(desc="The parish the book is from.")
+    year_range: str = dspy.InputField(desc="The year range the source book covers.")
+    item_types: dict[str, str] = dspy.InputField(
+        desc="The items to extract from each row with possible details."
+    )
     book_instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
     table: str = dspy.InputField(desc="The table text containing multiple rows")
     table_direction: str = dspy.InputField(
@@ -39,11 +48,6 @@ class AgentTableExtraction(dspy.Signature):
     table_headers: list[str] | None = dspy.InputField(
         desc="The headers of the table, if available."
     )
-    item_types: dict[str, str] = dspy.InputField(
-        desc="The items to extract from each row with possible details."
-    )
-    year_range: str = dspy.InputField(desc="The year range the source book covers.")
-    parish: str = dspy.InputField(desc="The parish the book is from.")
 
     extracted_items: list[dict[str, str | None]] = dspy.OutputField(
         desc=(
@@ -68,16 +72,16 @@ class ExtractAgentConfig:
     debug_dir: Path = Path("debug_output")
     save_debug_files: bool = True
     extract_dir: Path | None = None
-    batch_size: int = 10
+    batch_size: int = 20
     file_limit: int | None = None
     llm_model: str = "openai/gemini-2.0-flash"
-    max_tokens: int = 14_000
+    max_tokens: int = 17_000
 
 
 # --- Core Logic ---
 
 
-def process_table_batch(
+async def process_table_batch(
     table_batch_df: pd.DataFrame,
     table_direction: str,
     table_headers: list[str] | None,
@@ -90,7 +94,7 @@ def process_table_batch(
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
     extractor = dspy.Predict(AgentTableExtraction)
-    result = extractor(
+    result = await extractor.acall(
         table=table_render,
         table_direction=table_direction,
         table_headers=table_headers,
@@ -128,7 +132,7 @@ class RowExtractionResult:
         }
 
 
-def process_single_table(
+async def process_single_table(
     table: Datatable,
     page_side: str,
     file_metadata: FileMetadata,
@@ -175,7 +179,9 @@ def process_single_table(
         original_indices = batch_df.index.tolist()
 
         try:
-            extracted_batch, usage_data = process_table_batch(
+            # Currently within-table batches are processed sequentially. However, other books
+            # Should be processed concurrently so it's fine.
+            extracted_batch, usage_data = await process_table_batch(
                 table_batch_df=batch_df,
                 table_direction=table_direction,
                 table_headers=table_headers,
@@ -232,7 +238,7 @@ def process_single_table(
     return all_results
 
 
-def process_book(
+async def process_book(
     book_metadata: BookMetadata,
     data_source: AnnotatedContextSource,
     annotations: BookAnnotationReader,
@@ -244,7 +250,7 @@ def process_book(
 
     # 1) construct the instructions based on the context files.
     try:
-        instructions = generate_book_instructions(
+        instructions = await generate_book_instructions(
             book_metadata,
             data_source.get_book_context_files(book_metadata),
             annotations,
@@ -289,7 +295,7 @@ def process_book(
         all_results: list[RowExtractionResult] = []
         for table in tables:
             page_side = "both" if len(tables) == 1 else table.get_page_side()
-            table_results = process_single_table(
+            table_results = await process_single_table(
                 table,
                 page_side,
                 file_metadata,
@@ -305,7 +311,7 @@ def process_book(
             tqdm.update(1)
 
 
-def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
+async def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
     # Unzips the autod zip files... may take a while
     with AnnotatedContextSource(
@@ -330,22 +336,31 @@ def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
             xml_count = min(xml_count, config.file_limit)
 
         with tqdm(total=xml_count) as progress:
+            # Create tasks for concurrent processing of books
+            tasks = []
             for book_metadata in file_source.get_books():
                 if config.file_limit is not None:
                     if config.file_limit < 0:
                         # This is changed in process_book, but we also want to break this loop
                         break
                 file_source.get_book_files(book_metadata)
-                logger.info(f"Processing book: {book_metadata.book_id}")
-                process_book(
-                    book_metadata=book_metadata,
-                    data_source=file_source,
-                    annotations=annotations,
-                    config=config,
-                    tqdm=progress,
-                )
+                logger.debug(f"Creating task for book: {book_metadata.book_id}")
 
-        logger.info(f"Processing complete. Final results saved to {config.output_file}")
+                task = asyncio.create_task(
+                    process_book(
+                        book_metadata=book_metadata,
+                        data_source=file_source,
+                        annotations=annotations,
+                        config=config,
+                        tqdm=progress,
+                    )
+                )
+                tasks.append(task)
+
+            # Wait for all book processing tasks to complete
+            await asyncio.gather(*tasks)
+
+        logger.info("Processing complete.")
 
 
 # --- Utility Functions ---
@@ -355,7 +370,7 @@ def save_results(output_file: Path, results: list[RowExtractionResult]) -> None:
     """Saves a list of RowExtractionResult to a JSONL file."""
     logger.info(f"Saving {len(results)} results to {output_file}...")
     try:
-        with open(output_file, "w", encoding="utf-8") as f:
+        with open(output_file, "a", encoding="utf-8") as f:
             for result in results:
                 f.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
     except IOError as e:
@@ -375,11 +390,9 @@ def save_debug_info(
     output_tokens: int,
 ) -> None:
     """Saves detailed information for a single processed table for debugging."""
-    config.debug_dir.mkdir(exist_ok=True, parents=True)
-    debug_file = (
-        config.debug_dir
-        / f"extract_agent/{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
-    )
+    debug_dir = config.debug_dir / "extract_agent"
+    debug_dir.mkdir(exist_ok=True, parents=True)
+    debug_file = debug_dir / f"{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
     logger.info(f"Saving debug info to {debug_file}")
 
     try:
@@ -429,10 +442,6 @@ def setup_dspy_lm(config: ExtractAgentConfig) -> None:
 
 
 def main() -> None:
-    
-for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
-    logging.getLogger(lib_logger).setLevel(logging.WARNING)
-
     """Parses arguments, sets up configuration, and starts the pipeline."""
     parser = argparse.ArgumentParser(
         description="Extract structured data from historical church migration documents using an LLM."
@@ -506,7 +515,16 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
         logger.error(f"Autod zips directory not found: {autod_zips_dir}")
         return
 
-    # Load environment variables from .env file in the project root
+    # If output_file exists, try output_file_1 etc.
+    output_file = input_dir / str(args.output_filename)
+    original_output_file = output_file
+    i = 0
+    while output_file.exists():
+        i += 1
+        prev_output_file = output_file
+        output_file = output_file.with_stem(f"{original_output_file.stem}_{i}")
+        logger.info(f"'{prev_output_file}' already exists. Outputting to {output_file}")
+
     if Path(args.env_file).is_file():
         logger.info(f"Loading environment variables from {args.env_file}")
     load_dotenv(Path(args.env_file))
@@ -515,7 +533,7 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
         input_dir=input_dir,
         book_annotations_path=book_annotations_path,
         autod_zips_dir=autod_zips_dir,
-        output_file=input_dir / args.output_filename,
+        output_file=output_file,
         batch_size=args.batch_size,
         file_limit=args.file_limit,
         save_debug_files=args.save_debug_files,
@@ -524,7 +542,7 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
 
     try:
         setup_dspy_lm(config)
-        run_extraction_pipeline(config)
+        asyncio.run(run_extraction_pipeline(config))
     except Exception as e:
         logger.critical(f"A critical error occurred: {e}", exc_info=True)
 

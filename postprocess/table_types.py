@@ -123,9 +123,16 @@ class Datatable:
         Returns the text data of the table as a DataFrame.
         """
         try:
-            return self.data.map(lambda cell: cell.text)
+            # This fillna fixes a weird xml parsing case where some xml files in some
+            # parishes give nans...
+            # autods_kitee_muuttaneet_1903-1906_mko847_9.xml
+            # TODO fix the root cause
+            data = self.data.fillna(CellData("", None, None), inplace=False)  # type: ignore
+            return data.map(lambda cell: cell.text)
         except Exception as e:
-            logger.error("Failed to map data CellData to text.")
+            logger.error(
+                f"Failed to map data CellData to text. Debug:\n\n{self.data.to_markdown()}\n"
+            )
             raise e
 
     @property
