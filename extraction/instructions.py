@@ -27,7 +27,7 @@ class BookInstructions(dspy.Signature):
 
     Avoid framing general task methodology. Focus on delivering instructions for handling
     the specific structure, challenges, and nuances of the given book. Pay attention to details like
-    abbreviations, how specific items can be extracted, and repeating structural issues in the table.
+    abbreviations, how specific items can be extracted, ditto marks, and repeating structural issues in the table.
 
     The book is likely written in Finnish or Swedish.
 
@@ -62,7 +62,6 @@ async def generate_book_instructions(
         context_files, k=min(instructions_table_sample_size, len(context_files))
     )
     table_sample: list[Datatable] = []
-    headers: list[str] | None = None
     for file_path in table_sample_paths:
         with open(file_path, "r", encoding="utf-8") as f:
             file_metadata: FileMetadata | None = extract_file_metadata(file_path.name)
@@ -77,29 +76,37 @@ async def generate_book_instructions(
                 continue
             original_count = len(tables)
             tables = remove_overlapping_tables(tables)
-            if (
-                "print"
-                in parish_book.get_type_for_opening(file_metadata.page_number).lower()
-            ):
-                print_type_str = parish_book.get_type_for_opening(
-                    file_metadata.page_number
-                )
-                tables = merge_separated_tables(
-                    tables,
-                    annotations.get_print_type(print_type_str).table_count,
-                )
-                headers = annotations.get_table_headers(
-                    file_metadata.book_id, file_metadata.page_number
-                )
+
+            print_type_str = parish_book.get_type_for_opening(file_metadata.page_number)
+            tables = merge_separated_tables(
+                tables,
+                annotations.get_print_type(print_type_str).table_count,
+            )
+            for table in tables:
+                if (
+                    "print"
+                    in parish_book.get_type_for_opening(
+                        file_metadata.page_number
+                    ).lower()
+                ):
+                    table_headers = annotations.get_table_headers(
+                        file_metadata.book_id,
+                        file_metadata.page_number,
+                        page_side=table.get_page_side(),
+                    )
+                    table.headers = table_headers  # type: ignore
+                else:
+                    table.headers = []  # type: ignore
+                table.page = file_metadata.page_number  # type: ignore
 
             logger.debug(
                 f"Sampling tables from '{file_path}'. \n\tstart table count: {original_count}\n\tfixed table count {len(tables)}"
             )
 
-            idx = randint(0, len(tables) - 1)
+            idx = randint(
+                0, len(tables) - 1
+            )  # Only pick one of the tables on this xml opening
             table = tables[idx]
-            table.headers = headers[idx] if headers else None  # type: ignore
-            table.page = file_metadata.page_number  # type: ignore
             table_sample.append(table)
 
     predict = dspy.Predict(BookInstructions)
@@ -109,7 +116,7 @@ async def generate_book_instructions(
                 f"Page {table.page}\n"  # type: ignore
                 + f"{f'{table.get_page_side()} page\n' if table.get_page_side() != 'both' else f'{table.get_page_side()} pages\n'}"
                 + f"Migration direction: {annotations.get_table_direction(book_id=book_metadata.book_id, opening=table.page, page_side=table.get_page_side())}\n"  # type: ignore
-                + f"Headers hint: {table.headers}\n"  # type: ignore
+                + f"Headers hint: {', '.join(f"'Column {i}: {h}'" for i, h in enumerate(table.headers))}\n"  # type: ignore
                 + table.get_text_df().head(n=10).to_markdown(index=False)
                 for table in table_sample
             ]
@@ -138,7 +145,6 @@ async def generate_book_instructions(
 
         with open(debug_file_path, mode="w", encoding="utf-8") as f:
             f.write(f"Parish: {book_metadata.parish}\n")
-            f.write(f"Headers:\n\t{'\n\t'.join(headers) if headers else None}\n")
             f.write(
                 f"Items:{''.join(f'\n\t"{key}": "{ITEMS_TO_EXTRACT[key]}"' for key in ITEMS_TO_EXTRACT)}\n"
             )
@@ -192,14 +198,14 @@ def main():
         raise ValueError("API key not found in environment variables.")
 
     lm = dspy.LM(
-        model="openai/gemini-2.0-flash",
+        model="gemini/gemini-2.0-flash",
         api_key=api_key,
-        api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
         max_tokens=15_000,
     )
 
     dspy.settings.configure(track_usage=True, lm=lm)
-    logger.info("DSPy configured with 'openai/gemini-2.0-flash'")
+    logger.info("DSPy configured with 'gemini/gemini-2.0-flash'")
 
     book_dir = Path(args.book_dir)
     xml_files_path = Path(book_dir / "pageTextClassified")

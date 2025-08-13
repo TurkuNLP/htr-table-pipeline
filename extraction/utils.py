@@ -43,6 +43,28 @@ class BookMetadata:
         """
         return f"{self.book_type}_{self.year_range}_{self.source}"
 
+    def __lt__(self, other: object) -> bool:
+        """Compares BookMetadata objects based on their book_id."""
+        if not isinstance(other, BookMetadata):
+            return NotImplemented
+        return self.book_id < other.book_id
+
+    def __le__(self, other: object) -> bool:
+        """Compares BookMetadata objects for less than or equal to based on their book_id."""
+        if not isinstance(other, BookMetadata):
+            return NotImplemented
+        return self.book_id <= other.book_id
+
+    def __hash__(self) -> int:
+        """Returns a hash of the book_id for use in sets and dicts."""
+        return hash(self.book_id)
+
+    def __eq__(self, other: object) -> bool:
+        """Compares BookMetadata objects for equality based on their book_id."""
+        if not isinstance(other, BookMetadata):
+            return NotImplemented
+        return self.book_id == other.book_id
+
 
 def extract_file_metadata(
     filename: str, file_type: str = ".xml"

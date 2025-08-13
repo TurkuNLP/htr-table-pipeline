@@ -99,7 +99,7 @@ class AnnotatedContextSource(DataSource):
 
     def get_files(self) -> Iterable[Path]:
         """Retrieve files from the input directory that match the annotation pattern."""
-        yield from self.input_dir.glob("*.xml")
+        yield from self.input_dir.rglob("*.xml")
 
     def get_book_files(self, book_metadata: BookMetadata) -> Iterable[Path]:
         """Retrieve files to be processed for the same book based on book_id."""

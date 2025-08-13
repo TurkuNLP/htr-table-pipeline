@@ -103,7 +103,7 @@ def main(args: argparse.Namespace):
 
     logger.info(f"Found {len(xml_files)} XML files.")
 
-    xml_files = xml_files[:1]
+    # xml_files = xml_files[:1]
 
     jpg_files: list[Path] = []
     xml_to_jpg_map: dict[Path, Path] = {}
@@ -208,7 +208,7 @@ def main(args: argparse.Namespace):
                 # save img for debugging
                 cell_img_output_dir = output_dir / "debug"
                 cell_img_output_dir.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(cell_img_output_dir / f"cell_{cell.id}.jpg"), crop_img)
+                # cv2.imwrite(str(cell_img_output_dir / f"cell_{cell.id}.jpg"), crop_img)
 
         cell_types: list[tuple[str, float]] = []
         if not args.no_gpu:
@@ -232,7 +232,7 @@ def main(args: argparse.Namespace):
             if not args.no_gpu:
                 cell.cell_type = cell_types[i][0]
                 if cell.cell_type == "empty":
-                    cell.text = ""
+                    cell.text = cell_texts[i]
                 else:
                     cell.text = cell_texts[i]
             else:

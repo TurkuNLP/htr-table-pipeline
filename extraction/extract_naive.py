@@ -69,7 +69,7 @@ class AppConfig:
     save_debug_files: bool = True
     batch_size: int = 10
     file_limit: int | None = None
-    llm_model: str = "openai/gemini-2.0-flash"
+    llm_model: str = "gemini/gemini-2.0-flash"
     max_tokens: int = 14_000
 
 
@@ -272,7 +272,7 @@ def save_debug_info(
 
     try:
         with open(debug_file, "w", encoding="utf-8") as f:
-            f.write(f"Source XML: {metadata.book_id}_{metadata.page_number:04d}.xml\n")
+            f.write(f"Source XML: {metadata.book_id}_{metadata.page_number}.xml\n")
             f.write(f"Table ID: {table_id}\n")
             f.write(f"Table Direction: {table_direction}\n")
             f.write(f"Table Headers: {table_headers}\n")
@@ -301,7 +301,7 @@ def setup_dspy_lm(config: AppConfig) -> None:
     lm = dspy.LM(
         model=config.llm_model,
         api_key=api_key,
-        api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
         max_tokens=config.max_tokens,
     )
 

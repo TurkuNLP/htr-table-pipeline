@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Any
 
 import dspy
@@ -38,7 +39,7 @@ class AgentTableExtraction(dspy.Signature):
     parish: str = dspy.InputField(desc="The parish the book is from.")
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
     item_types: dict[str, str] = dspy.InputField(
-        desc="The items to extract from each row with possible details."
+        desc="The items to extract from each row with possible details. Set the ITEM_cells to mark which cells the data was extracted from."
     )
     book_instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
     table: str = dspy.InputField(desc="The table text containing multiple rows")
@@ -74,7 +75,7 @@ class ExtractAgentConfig:
     extract_dir: Path | None = None
     batch_size: int = 20
     file_limit: int | None = None
-    llm_model: str = "openai/gemini-2.0-flash"
+    llm_model: str = "gemini/gemini-2.0-flash"
     max_tokens: int = 17_000
 
 
@@ -94,7 +95,7 @@ async def process_table_batch(
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
     extractor = dspy.Predict(AgentTableExtraction)
-    result = await extractor.acall(
+    result = extractor(
         table=table_render,
         table_direction=table_direction,
         table_headers=table_headers,
@@ -173,6 +174,7 @@ async def process_single_table(
     all_results: list[RowExtractionResult] = []
     input_tokens = 0
     output_tokens = 0
+    cycles = 0
     # Process the DataFrame in batches
     for i in range(0, len(df), config.batch_size):
         batch_df = df.iloc[i : i + config.batch_size]
@@ -188,6 +190,7 @@ async def process_single_table(
                 file_metadata=file_metadata,
                 instructions=instructions,
             )
+            cycles += 1
             if usage_data:
                 for model_key in usage_data:
                     input_tokens += (
@@ -207,7 +210,7 @@ async def process_single_table(
             for row_idx, extracted_data in zip(original_indices, extracted_batch):
                 all_results.append(
                     RowExtractionResult(
-                        source_xml=f"{file_metadata.book_id}_{file_metadata.page_number:04d}.xml",
+                        source_xml=f"{file_metadata.book_id}_{file_metadata.page_number}.xml",
                         table_id=table.id,
                         row_idx=row_idx,
                         extracted_data=extracted_data,
@@ -235,6 +238,19 @@ async def process_single_table(
             output_tokens=output_tokens,
         )
 
+        dir = config.debug_dir / "extract_agent_history"
+        dir.mkdir(exist_ok=True, parents=True)
+        with open(
+            file=dir
+            / f"{file_metadata.book_id}_{file_metadata.page_number}_{table.id}_history.txt",
+            mode="w",
+            encoding="utf-8",
+        ) as f:
+            orig_stdout = sys.stdout
+            sys.stdout = f
+            dspy.inspect_history(n=cycles)
+            sys.stdout = orig_stdout
+
     return all_results
 
 
@@ -255,6 +271,7 @@ async def process_book(
             data_source.get_book_context_files(book_metadata),
             annotations,
             parish_book,
+            debug_output=config.save_debug_files,
         )
     except Exception as e:
         logger.error(
@@ -340,7 +357,7 @@ async def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
                 # Create tasks for concurrent processing of books
                 logger.info("Processing books concurrently - high qps")
                 tasks = []
-                for book_metadata in file_source.get_books():
+                for book_metadata in sorted(list(file_source.get_books())):
                     assert config.file_limit is None
                     file_source.get_book_files(book_metadata)
                     logger.debug(f"Creating task for book: {book_metadata.book_id}")
@@ -365,6 +382,7 @@ async def run_extraction_pipeline(config: ExtractAgentConfig) -> None:
                     if config.file_limit is not None:
                         if config.file_limit < 0:
                             # This is changed in process_book, but we also want to break this loop
+                            logger.info("File limit reached, stopping book processing.")
                             break
                     file_source.get_book_files(book_metadata)
                     logger.info(f"Processing book: {book_metadata.book_id}")
@@ -446,7 +464,7 @@ def setup_dspy_lm(config: ExtractAgentConfig) -> None:
     lm = dspy.LM(
         model=config.llm_model,
         api_key=api_key,
-        api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
         max_tokens=config.max_tokens,
     )
 
