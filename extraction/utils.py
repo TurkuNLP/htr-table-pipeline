@@ -128,7 +128,7 @@ def read_annotation_file(
 ) -> dict[
     str,  # xml file name with suffix
     dict[
-        str,
+        str,  # table id
         dict[str, list[int]],
     ],
 ]:
@@ -156,7 +156,7 @@ def read_annotation_file(
                 else:
                     record = eval(line)
             except (json.JSONDecodeError, SyntaxError) as e:
-                print(f"Error parsing line: {line}")
+                print(f"Error parsing line: {line}\n\t{e}")
                 continue
 
             xml_path = Path(record["xml_path"]).name

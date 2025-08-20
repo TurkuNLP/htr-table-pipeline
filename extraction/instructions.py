@@ -21,17 +21,17 @@ logger = logging.getLogger(__name__)
 
 class BookInstructions(dspy.Signature):
     """
-    Write clear, specific book-level instructions for an LLM on how to extract structured data
+    Return clear, specific book-level instructions for an LLM on how to extract structured data
     from a historical migration table. The LLM will only have one table to process at a time, so the
     book-level instructions will be crucial.
 
     Avoid framing general task methodology. Focus on delivering instructions for handling
     the specific structure, challenges, and nuances of the given book. Pay attention to details like
-    abbreviations, how specific items can be extracted, ditto marks, and repeating structural issues in the table.
+    abbreviations, how specific items can be extracted, ditto marks, and repeating structural issues.
+
+    When describing columns, prefer relational referencing: e.g. "birthday is stored after the name column" or "men_count and women_count are stored consequentially with both columns having either empty values or (usually) one-figure integers. Sometimes '1' is mistakenly written as '/'"
 
     The book is likely written in Finnish or Swedish.
-
-    Only include the instructions in your response, nothing else.
     """
 
     # book_metadata: BookMetadata = dspy.InputField(
@@ -56,7 +56,7 @@ async def generate_book_instructions(
     parish_book: ParishBook,
     debug_output: bool = False,
     instructions_table_sample_size=15,
-):
+) -> str:
     context_files = list(xml_files)
     table_sample_paths = sample(
         context_files, k=min(instructions_table_sample_size, len(context_files))
@@ -77,11 +77,6 @@ async def generate_book_instructions(
             original_count = len(tables)
             tables = remove_overlapping_tables(tables)
 
-            print_type_str = parish_book.get_type_for_opening(file_metadata.page_number)
-            tables = merge_separated_tables(
-                tables,
-                annotations.get_print_type(print_type_str).table_count,
-            )
             for table in tables:
                 if (
                     "print"
@@ -89,15 +84,20 @@ async def generate_book_instructions(
                         file_metadata.page_number
                     ).lower()
                 ):
+                    # TODO examine whether table count can be determined for non-printed tables???
+                    print_type_str = parish_book.get_type_for_opening(
+                        file_metadata.page_number
+                    )
+                    tables = merge_separated_tables(
+                        tables,
+                        annotations.get_print_type(print_type_str).table_count,
+                    )
                     table_headers = annotations.get_table_headers(
                         file_metadata.book_id,
                         file_metadata.page_number,
                         page_side=table.get_page_side(),
                     )
                     table.headers = table_headers  # type: ignore
-                else:
-                    table.headers = []  # type: ignore
-                table.page = file_metadata.page_number  # type: ignore
 
             logger.debug(
                 f"Sampling tables from '{file_path}'. \n\tstart table count: {original_count}\n\tfixed table count {len(tables)}"
@@ -107,6 +107,9 @@ async def generate_book_instructions(
                 0, len(tables) - 1
             )  # Only pick one of the tables on this xml opening
             table = tables[idx]
+            table.page = file_metadata.page_number  # type: ignore
+            if not hasattr(table, "headers"):
+                table.headers = []  # type: ignore
             table_sample.append(table)
 
     predict = dspy.Predict(BookInstructions)
@@ -156,9 +159,7 @@ async def generate_book_instructions(
             f.write("\n--- Instructions ---\n")
             f.write(f"\n{instructions}")
 
-    logger.info(
-        f"Generated book instructions for '{book_metadata.get_book_dir_name()}'"
-    )
+    logger.info(f"Generated book instructions for '{book_metadata.book_id}'")
 
     return instructions
 

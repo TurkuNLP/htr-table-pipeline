@@ -5,11 +5,13 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Any
 
 import dspy
 import pandas as pd
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from extraction.data_source import SimpleDirSource
 from extraction.items_to_extract import ITEMS_TO_EXTRACT
@@ -33,18 +35,18 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
 class NaiveTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
 
-    table: str = dspy.InputField(desc="The table text containing multiple rows")
+    item_types: dict[str, str] = dspy.InputField(
+        desc="The items to extract from each row with possible details."
+    )
+    parish: str = dspy.InputField(desc="The parish the book is from.")
     table_direction: str = dspy.InputField(
         desc="Whether the table depicts people moving in or out of the parish."
     )
     table_headers: list[str] | None = dspy.InputField(
         desc="The headers of the table, if available."
     )
-    item_types: dict[str, str] = dspy.InputField(
-        desc="The items to extract from each row with possible details."
-    )
     year_range: str = dspy.InputField(desc="The year range the source book covers.")
-    parish: str = dspy.InputField(desc="The parish the book is from.")
+    table: str = dspy.InputField(desc="The table text containing multiple rows")
 
     extracted_items: list[dict[str, str | None]] = dspy.OutputField(
         desc=(
@@ -59,18 +61,18 @@ class NaiveTableExtraction(dspy.Signature):
 
 
 @dataclass
-class AppConfig:
+class NaiveAppConfig:
     """Application configuration settings."""
 
     input_dir: Path
     book_annotations_path: Path
     output_file: Path
+    batch_size: int
     debug_dir: Path = Path("debug_output")
     save_debug_files: bool = True
-    batch_size: int = 10
     file_limit: int | None = None
-    llm_model: str = "gemini/gemini-2.0-flash"
-    max_tokens: int = 14_000
+    llm_model: str = "openai/gpt-5-nano"
+    max_tokens: int = 17_000
 
 
 # --- Core Logic ---
@@ -109,22 +111,22 @@ async def process_table_batch(
 async def process_single_table(
     table: Datatable,
     page_side: str,
-    metadata: FileMetadata,
+    file_metadata: FileMetadata,
     annotations: BookAnnotationReader,
-    config: AppConfig,
+    config: NaiveAppConfig,
 ) -> list[dict]:
     """
     Processes a full table by batching its rows, extracting data,
     and structuring the results.
     """
     table_direction = annotations.get_table_direction(
-        book_id=metadata.book_id,
-        opening=metadata.page_number,
+        book_id=file_metadata.book_id,
+        opening=file_metadata.page_number,
         page_side=page_side,  # type: ignore
     )
     table_headers = annotations.get_table_headers(
-        book_id=metadata.book_id,
-        opening=metadata.page_number,
+        book_id=file_metadata.book_id,
+        opening=file_metadata.page_number,
         page_side=page_side,  # type: ignore
     )
 
@@ -133,6 +135,7 @@ async def process_single_table(
         return []
 
     all_results = []
+    cycles = 0
     # Process the DataFrame in batches
     for i in range(0, len(df), config.batch_size):
         batch_df = df.iloc[i : i + config.batch_size]
@@ -143,8 +146,16 @@ async def process_single_table(
                 table_batch_df=batch_df,
                 table_direction=table_direction,
                 table_headers=table_headers,
-                metadata=metadata,
+                metadata=file_metadata,
             )
+            cycles += 1
+
+            if not extracted_batch:
+                logger.warning(
+                    f"No items extracted for batch {i // config.batch_size + 1} from {file_metadata.book_id}, table {table.id}."
+                )
+
+                continue
 
             # It's fine if the extracted count doesn't match the batch row count, there may be non-sensical rows mixed in
 
@@ -152,7 +163,7 @@ async def process_single_table(
             for row_idx, extracted_data in zip(original_indices, extracted_batch):
                 all_results.append(
                     {
-                        "source_xml": f"{metadata.book_id}_{metadata.page_number:04d}.xml",
+                        "source_xml": f"{file_metadata.book_id}_{file_metadata.page_number}.xml",
                         "table_id": table.id,
                         "row_idx": row_idx,
                         "extracted_data": extracted_data,
@@ -161,7 +172,7 @@ async def process_single_table(
 
         except Exception as e:
             logger.error(
-                f"Error processing batch from {metadata.book_id}, table {table.id}: {e}",
+                f"Error processing batch from {file_metadata.book_id}, table {table.id}: {e}",
                 exc_info=True,
             )
             continue
@@ -171,16 +182,28 @@ async def process_single_table(
             table=df,
             table_direction=table_direction,
             table_headers=table_headers,
-            metadata=metadata,
+            metadata=file_metadata,
             extracted_items=all_results,
             config=config,
             table_id=table.id,
         )
+        dir = config.debug_dir / "extract_naive_history"
+        dir.mkdir(exist_ok=True, parents=True)
+        with open(
+            file=dir
+            / f"{file_metadata.book_id}_{file_metadata.page_number}_{table.id}_history.txt",
+            mode="w",
+            encoding="utf-8",
+        ) as f:
+            orig_stdout = sys.stdout
+            sys.stdout = f
+            dspy.inspect_history(n=cycles)
+            sys.stdout = orig_stdout
 
     return all_results
 
 
-async def run_extraction_pipeline(config: AppConfig) -> None:
+async def run_extraction_pipeline(config: NaiveAppConfig) -> None:
     """Main pipeline to find, process, and save data from XML files."""
     xml_files = sorted(SimpleDirSource(config.input_dir).get_files())
     if config.file_limit:
@@ -191,7 +214,7 @@ async def run_extraction_pipeline(config: AppConfig) -> None:
     annotations = BookAnnotationReader(config.book_annotations_path)
     all_results: list[dict] = []
 
-    for xml_path in xml_files:
+    for xml_path in tqdm(xml_files, desc="Processing XML files"):
         logger.info(f"Processing {xml_path.name}")
         metadata = extract_file_metadata(xml_path.name)
         if not metadata:
@@ -205,9 +228,13 @@ async def run_extraction_pipeline(config: AppConfig) -> None:
 
         # these shouldn't be relevant when using the development-set, but are crucial for the actual run
         tables = remove_overlapping_tables(tables)
-        tables = merge_separated_tables(
-            tables, annotations.get_print_type(metadata.book_id).table_count
-        )
+        try:
+            tables = merge_separated_tables(
+                tables, annotations.get_print_type(metadata.book_id).table_count
+            )
+        except Exception as _e:
+            # Is handdrawn... dirty way to check it
+            pass
 
         # Process all tables from this file concurrently
         table_tasks = []
@@ -233,7 +260,7 @@ async def run_extraction_pipeline(config: AppConfig) -> None:
                 else:
                     all_results.extend(result)
 
-        # Periodically save results after each file
+        # Save results after each file
         save_results(config.output_file, all_results)
 
     logger.info(f"Processing complete. Final results saved to {config.output_file}")
@@ -259,15 +286,13 @@ def save_debug_info(
     table_headers: list[str] | None,
     metadata: FileMetadata,
     extracted_items: list[dict],
-    config: AppConfig,
+    config: NaiveAppConfig,
     table_id: str,
 ) -> None:
     """Saves detailed information for a single processed table for debugging."""
-    config.debug_dir.mkdir(exist_ok=True)
-    debug_file = (
-        config.debug_dir
-        / f"extract_agent/{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
-    )
+    debug_dir = config.debug_dir / "extract_naive"
+    debug_dir.mkdir(exist_ok=True, parents=True)
+    debug_file = debug_dir / f"{metadata.book_id}_{metadata.page_number}_{table_id}.txt"
     logger.info(f"Saving debug info to {debug_file}")
 
     try:
@@ -287,7 +312,7 @@ def save_debug_info(
         logger.error(f"Failed to write debug file {debug_file}: {e}")
 
 
-def setup_dspy_lm(config: AppConfig) -> None:
+def setup_dspy_lm(config: NaiveAppConfig) -> None:
     """Initializes and configures the dspy language model."""
     api_key = (
         os.getenv("GEMINI_API_KEY")
@@ -297,12 +322,14 @@ def setup_dspy_lm(config: AppConfig) -> None:
     if not api_key:
         raise ValueError("API key not found in environment variables.")
 
-    # TODO currently only Gemini models are supported
     lm = dspy.LM(
         model=config.llm_model,
         api_key=api_key,
-        # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
+        temperature=1.0,
         max_tokens=config.max_tokens,
+        reasoning_effort="low",
+        # max_completion_tokens=config.max_tokens,
+        # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
     )
 
     dspy.settings.configure(track_usage=True, lm=lm)
@@ -338,7 +365,7 @@ def main() -> None:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=10,
+        default=20,
         help="Number of table rows to process in a single LLM call.",
     )
     parser.add_argument(
@@ -346,6 +373,11 @@ def main() -> None:
         type=int,
         default=None,
         help="Limit the number of XML files to process (for debugging).",
+    )
+    parser.add_argument(
+        "--env-file",
+        type=str,
+        default=".env",
     )
     parser.add_argument(
         "--no-debug-files",
@@ -365,9 +397,12 @@ def main() -> None:
     if not book_annotations_path.is_file():
         logger.error(f"Book annotations file not found: {book_annotations_path}")
         return  # Load environment variables from .env file in the project root
-    load_dotenv(Path(__file__).parent.parent / ".env")
 
-    config = AppConfig(
+    if Path(args.env_file).is_file():
+        logger.info(f"Loading environment variables from {args.env_file}")
+    load_dotenv(Path(args.env_file))
+
+    config = NaiveAppConfig(
         input_dir=input_dir,
         book_annotations_path=book_annotations_path,
         output_file=input_dir / args.output_filename,
@@ -387,4 +422,4 @@ if __name__ == "__main__":
     main()
 
     # Usage:
-    # python -m extraction.main --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval" --book-annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --file-limit 2 --output-filename "test_run_output.jsonl"
+    # python -m extraction.extract_naive --input-dir "C:\Users\leope\Documents\dev\turku-nlp\annotated-data\extraction-eval" --book-annotations "C:\Users\leope\Documents\dev\turku-nlp\htr-table-pipeline\annotation-tools\sampling\Moving_record_parishes_with_formats_v2.xlsx" --file-limit 2 --output-filename "test_run_output.jsonl"

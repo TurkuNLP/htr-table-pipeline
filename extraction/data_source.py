@@ -31,7 +31,7 @@ class SimpleDirSource(DataSource):
 
     def get_files(self) -> Iterable[Path]:
         """Retrieve all files in the input directory."""
-        yield from self.input_dir.glob("*.xml")
+        yield from self.input_dir.rglob("*.xml")
 
     def get_book_files(self, book: BookMetadata) -> Iterable[Path]:
         yield from self.input_dir.glob(f"*{book.parish}*.xml")  # TODO replace?

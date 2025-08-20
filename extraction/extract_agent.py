@@ -36,19 +36,19 @@ for lib_logger in ["dspy", "httpx", "httpcore", "openai", "asyncio", "LiteLLM"]:
 class AgentTableExtraction(dspy.Signature):
     """Extract the given items from the table from an 1800s Finnish church migration document. You can fill/fix values if they can be guessed from the context."""
 
-    parish: str = dspy.InputField(desc="The parish the book is from.")
-    year_range: str = dspy.InputField(desc="The year range the source book covers.")
     item_types: dict[str, str] = dspy.InputField(
         desc="The items to extract from each row with possible details. Set the ITEM_cells to mark which cells the data was extracted from."
     )
+    parish: str = dspy.InputField(desc="The parish the book is from.")
+    year_range: str = dspy.InputField(desc="The year range the source book covers.")
     book_instructions: str = dspy.InputField(desc="Book-level extraction instructions.")
-    table: str = dspy.InputField(desc="The table text containing multiple rows")
     table_direction: str = dspy.InputField(
         desc="Whether the table depicts people moving in or out of the parish."
     )
     table_headers: list[str] | None = dspy.InputField(
         desc="The headers of the table, if available."
     )
+    table: str = dspy.InputField(desc="The table text containing multiple rows")
 
     extracted_items: list[dict[str, str | None]] = dspy.OutputField(
         desc=(
@@ -73,10 +73,10 @@ class ExtractAgentConfig:
     debug_dir: Path = Path("debug_output")
     save_debug_files: bool = True
     extract_dir: Path | None = None
-    batch_size: int = 20
+    batch_size: int = 15
     file_limit: int | None = None
-    llm_model: str = "gemini/gemini-2.0-flash"
-    max_tokens: int = 17_000
+    llm_model: str = "openai/gpt-5-nano"
+    max_tokens: int = 30_000
 
 
 # --- Core Logic ---
@@ -88,6 +88,7 @@ async def process_table_batch(
     table_headers: list[str] | None,
     file_metadata: FileMetadata,
     instructions: str,
+    config: ExtractAgentConfig,
 ) -> tuple[list[dict[str, str | None]], dict | None]:
     """Processes a single batch of table rows using the dspy signature."""
     table_render = table_batch_df.to_markdown(index=False)
@@ -95,15 +96,22 @@ async def process_table_batch(
         raise TypeError("Pandas DataFrame could not be rendered to a string.")
 
     extractor = dspy.Predict(AgentTableExtraction)
-    result = extractor(
-        table=table_render,
-        table_direction=table_direction,
-        table_headers=table_headers,
-        year_range=file_metadata.year_range,
-        parish=file_metadata.parish,
-        item_types=ITEMS_TO_EXTRACT,
-        book_instructions=instructions,
-    )
+
+    try:
+        # Call the extractor with the table and metadata
+        result = await extractor.acall(
+            table=table_render,
+            table_direction=table_direction,
+            table_headers=table_headers,
+            year_range=file_metadata.year_range,
+            parish=file_metadata.parish,
+            item_types=ITEMS_TO_EXTRACT,
+            book_instructions=instructions,
+        )
+    except Exception as e:
+        logger.error(
+            f"Error during extraction for '{f'{file_metadata.book_id}_{file_metadata.page_number}'}'.\n\tError: {e}",
+        )
 
     logger.info(f"LLM usage for batch: {result.get_lm_usage()}")
 
@@ -189,6 +197,7 @@ async def process_single_table(
                 table_headers=table_headers,
                 file_metadata=file_metadata,
                 instructions=instructions,
+                config=config,
             )
             cycles += 1
             if usage_data:
@@ -301,7 +310,10 @@ async def process_book(
         # these shouldn't be relevant when using the development-set, but are crucial for the actual run
         tables = remove_overlapping_tables(tables)
 
-        if parish_book.is_printed():
+        if (
+            "print"
+            in parish_book.get_type_for_opening(file_metadata.page_number).lower()
+        ):
             tables = merge_separated_tables(
                 tables,
                 annotations.get_print_type(
@@ -460,12 +472,14 @@ def setup_dspy_lm(config: ExtractAgentConfig) -> None:
     if not api_key:
         raise ValueError("API key not found in environment variables.")
 
-    # TODO currently only Gemini models are supported
     lm = dspy.LM(
         model=config.llm_model,
         api_key=api_key,
+        temperature=1.0,
+        max_tokens=None,  # type: ignore
+        max_completion_tokens=16_000,
+        reasoning_effort="low",
         # api_base="https://generativelanguage.googleapis.com/v1beta/openai/",
-        max_tokens=config.max_tokens,
     )
 
     dspy.settings.configure(track_usage=True, lm=lm)
