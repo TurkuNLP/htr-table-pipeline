@@ -95,7 +95,9 @@ def compute_bounding_rect(coords: list[tuple[int, int]]) -> Rect:
     return Rect(x_min, y_min, x_max - x_min, y_max - y_min)
 
 
-def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
+def extract_datatables_from_xml(
+    xml_file: TextIOWrapper, propagate_dittos: bool = True
+) -> list[Datatable]:
     """Extract table data from PAGE XML file and return as a list of pandas DataFrames"""
     # read the xml file (predictions for one image), and return datatables
     tree = ET.parse(xml_file)
@@ -200,7 +202,8 @@ def extract_datatables_from_xml(xml_file: TextIOWrapper) -> list[Datatable]:
         )
 
         # Resolve "same-as" cells to values from above
-        df_text = resolve_same_as_cells(df_text, df_type)
+        if propagate_dittos:
+            df_text = resolve_same_as_cells(df_text, df_type)
 
         # get the table rectangle
         rect: Rect
